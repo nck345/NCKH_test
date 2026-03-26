@@ -34,6 +34,7 @@ from config import (
     SPEED_ACCEL,
     SPEED_DECEL,
     SAFE_DISTANCE,
+    MAX_CARS_PER_EDGE_DIR,
     LEARNING_RATE,
     DISCOUNT_FACTOR,
     EPSILON_START,
@@ -194,28 +195,43 @@ class CarAgent(mesa.Agent):
 
     def _count_cars_at(self, node):
         return sum(1 for a in self.model.agents
-                   if a is not self and not a.on_edge and a.current_node == node)
+                   if a is not self and not a.on_edge and not a.reached and a.current_node == node)
 
     def _is_node_full(self, node):
         return self._count_cars_at(node) >= MAX_CARS_PER_NODE
 
     def _car_ahead_distance(self):
-        """Khoảng cách đến xe gần nhất phía trước trên cùng cạnh."""
+        """Khoảng cách đến xe gần nhất phía trước trên cùng cạnh CÙNG CHIỀU."""
         min_dist = 999.0
         for a in self.model.agents:
             if (a is not self and a.on_edge
                     and a.edge_from == self.edge_from
-                    and a.edge_to == self.edge_to
+                    and a.edge_to == self.edge_to  # cùng chiều
                     and a.edge_progress > self.edge_progress):
                 dist = a.edge_progress - self.edge_progress
                 if dist < min_dist:
                     min_dist = dist
         return min_dist
 
+    def _count_same_dir_on_edge(self):
+        """Số xe khác đang đi cùng chiều trên cùng cạnh."""
+        return sum(1 for a in self.model.agents
+                   if a is not self and a.on_edge and not a.reached
+                   and a.edge_from == self.edge_from
+                   and a.edge_to == self.edge_to)
+
+    def _is_edge_full(self, from_node, to_node):
+        """Kiểm tra cạnh có đầy xe cùng chiều chưa."""
+        count = sum(1 for a in self.model.agents
+                    if a is not self and a.on_edge and not a.reached
+                    and a.edge_from == from_node
+                    and a.edge_to == to_node)
+        return count >= MAX_CARS_PER_EDGE_DIR
+
     def _do_reroute(self):
         crowded = set()
         for a in self.model.agents:
-            if a is not self and not a.on_edge:
+            if a is not self and not a.on_edge and not a.reached:
                 crowded.add(a.current_node)
         if self.path:
             crowded.add(self.path[0])
@@ -288,8 +304,10 @@ class CarAgent(mesa.Agent):
             self.wait_count += 1
             return PENALTY_RUN_RED
 
-        # Nút đích đầy
-        # (không cần check vì xe sẽ đi trên cạnh, check lại khi đến cuối cạnh)
+        # Cạnh cùng chiều đã đầy → không vào được
+        if self._is_edge_full(self.current_node, next_node):
+            self.wait_count += 1
+            return PENALTY_COLLISION
 
         # Đi vào cạnh
         self.on_edge = True

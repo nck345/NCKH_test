@@ -31,7 +31,8 @@ SPEED_MAX = 0.35             # Tốc độ tối đa
 SPEED_ACCEL = 0.05           # Mức tăng khi tăng tốc
 SPEED_DECEL = 0.05           # Mức giảm khi giảm tốc
 
-SAFE_DISTANCE = 0.2          # Khoảng cách an toàn giữa 2 xe trên cùng cạnh
+SAFE_DISTANCE = 0.2          # Khoảng cách an toàn giữa 2 xe cùng chiều trên cạnh
+MAX_CARS_PER_EDGE_DIR = 3    # Số xe tối đa trên 1 cạnh cùng chiều
 
 
 # =============================================================

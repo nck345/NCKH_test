@@ -53,8 +53,12 @@ def run_visualization(model):
 
     G = model.G
     paused = False
-    skip_msg = ""       # Thông báo tạm (VD: "Skipping to epoch 50...")
+    skip_msg = ""
     skip_msg_timer = 0
+
+    # Input trong Pygame (không dùng terminal)
+    input_mode = False     # Đang nhập số epoch?
+    input_text = ""        # Chuỗi đang gõ
 
     running = True
     while running:
@@ -63,6 +67,53 @@ def run_visualization(model):
                 running = False
 
             if event.type == pygame.KEYDOWN:
+                # === Chế độ nhập số epoch ===
+                if input_mode:
+                    if event.key == pygame.K_RETURN:
+                        # Xác nhận
+                        try:
+                            target = int(input_text)
+                            if target > model.epoch:
+                                # Vẽ thông báo đang skip
+                                screen.fill(COLOR_BG)
+                                msg = font_title.render(
+                                    f"Skipping to epoch {target}...",
+                                    True, COLOR_EPOCH,
+                                )
+                                r = msg.get_rect(center=(
+                                    WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
+                                ))
+                                screen.blit(msg, r)
+                                pygame.display.flip()
+                                # Skip
+                                model.skip_to_epoch(target)
+                                skip_msg = f">> Da skip toi epoch {model.epoch}"
+                                skip_msg_timer = 120
+                            else:
+                                skip_msg = "Epoch khong hop le!"
+                                skip_msg_timer = 90
+                        except ValueError:
+                            skip_msg = "Nhap sai!"
+                            skip_msg_timer = 60
+                        input_mode = False
+                        input_text = ""
+                        paused = False
+
+                    elif event.key == pygame.K_ESCAPE:
+                        # Hủy nhập
+                        input_mode = False
+                        input_text = ""
+                        paused = False
+
+                    elif event.key == pygame.K_BACKSPACE:
+                        input_text = input_text[:-1]
+
+                    elif event.unicode.isdigit():
+                        input_text += event.unicode
+
+                    continue  # Không xử lý phím tắt khác khi đang nhập
+
+                # === Phím tắt bình thường ===
                 if event.key == pygame.K_ESCAPE:
                     running = False
 
@@ -70,44 +121,16 @@ def run_visualization(model):
                     paused = not paused
 
                 elif event.key == pygame.K_n:
-                    # Chuyển epoch mới ngay
-                    model.reset_epoch()
+                    # Skip hết epoch hiện tại (train xong) rồi bắt đầu epoch mới
+                    target = model.epoch + 1
+                    model.skip_to_epoch(target)
                     skip_msg = f">> Epoch {model.epoch}"
                     skip_msg_timer = 60
 
                 elif event.key == pygame.K_s:
-                    # Nhập epoch muốn skip (trong console)
+                    input_mode = True
+                    input_text = ""
                     paused = True
-                    pygame.display.set_caption("Nhap so epoch vao console...")
-                    try:
-                        target = int(input(
-                            f"  Epoch hien tai: {model.epoch}. "
-                            f"Nhap epoch muon skip toi: "
-                        ))
-                        if target > model.epoch:
-                            skip_msg = f"Skipping to epoch {target}..."
-                            skip_msg_timer = 120
-                            # Vẽ thông báo trước khi skip
-                            screen.fill(COLOR_BG)
-                            msg = font_title.render(skip_msg, True, COLOR_EPOCH)
-                            r = msg.get_rect(center=(WINDOW_WIDTH // 2,
-                                                     WINDOW_HEIGHT // 2))
-                            screen.blit(msg, r)
-                            pygame.display.flip()
-                            # Skip
-                            model.skip_to_epoch(target)
-                            skip_msg = f">> Da skip toi epoch {model.epoch}"
-                            skip_msg_timer = 120
-                        else:
-                            skip_msg = "Epoch khong hop le!"
-                            skip_msg_timer = 90
-                    except ValueError:
-                        skip_msg = "Nhap sai!"
-                        skip_msg_timer = 60
-                    paused = False
-                    pygame.display.set_caption(
-                        "MAS Traffic Simulation – Q-Learning"
-                    )
 
         # Bước simulation
         if not paused:
@@ -208,8 +231,40 @@ def run_visualization(model):
             surf = font_medium.render(line, True, COLOR_TEXT)
             screen.blit(surf, (22, panel_y + 8 + i * 20))
 
-        # Tạm dừng
-        if paused:
+        # Tạm dừng / Input overlay
+        if input_mode:
+            # Overlay nhập epoch
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            screen.blit(overlay, (0, 0))
+
+            # Box nhập
+            box_w, box_h = 400, 120
+            box_x = (WINDOW_WIDTH - box_w) // 2
+            box_y = (WINDOW_HEIGHT - box_h) // 2
+            pygame.draw.rect(screen, (40, 40, 60),
+                             (box_x, box_y, box_w, box_h), border_radius=10)
+            pygame.draw.rect(screen, COLOR_EPOCH,
+                             (box_x, box_y, box_w, box_h), 2, border_radius=10)
+
+            prompt = font_large.render(
+                f"Skip toi epoch (hien tai: {model.epoch})", True, COLOR_TEXT
+            )
+            screen.blit(prompt, (box_x + 20, box_y + 15))
+
+            # Ô nhập
+            input_box = pygame.Rect(box_x + 80, box_y + 50, 240, 35)
+            pygame.draw.rect(screen, (60, 60, 80), input_box, border_radius=5)
+            pygame.draw.rect(screen, COLOR_EPOCH, input_box, 2, border_radius=5)
+            txt = font_title.render(input_text + "|", True, COLOR_EPOCH)
+            screen.blit(txt, (input_box.x + 10, input_box.y + 5))
+
+            hint = font_small.render(
+                "[Enter] Xac nhan    [Esc] Huy", True, COLOR_TEXT_DIM
+            )
+            screen.blit(hint, (box_x + 80, box_y + 95))
+
+        elif paused:
             ps = font_title.render("|| TAM DUNG ||", True, COLOR_HOTKEY)
             r = ps.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
             screen.blit(ps, r)
