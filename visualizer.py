@@ -121,11 +121,11 @@ def run_visualization(model):
                     paused = not paused
 
                 elif event.key == pygame.K_n:
-                    # Skip hết epoch hiện tại (train xong) rồi bắt đầu epoch mới
-                    target = model.epoch + 1
-                    model.skip_to_epoch(target)
-                    skip_msg = f">> Epoch {model.epoch}"
-                    skip_msg_timer = 60
+                    # Epoch đã xong → bắt đầu epoch mới
+                    if model.epoch_done:
+                        model.reset_epoch()
+                        skip_msg = f">> Epoch {model.epoch}"
+                        skip_msg_timer = 60
 
                 elif event.key == pygame.K_s:
                     input_mode = True
@@ -231,14 +231,12 @@ def run_visualization(model):
             surf = font_medium.render(line, True, COLOR_TEXT)
             screen.blit(surf, (22, panel_y + 8 + i * 20))
 
-        # Tạm dừng / Input overlay
+        # Tạm dừng / Input overlay / Epoch kết thúc
         if input_mode:
-            # Overlay nhập epoch
             overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 150))
             screen.blit(overlay, (0, 0))
 
-            # Box nhập
             box_w, box_h = 400, 120
             box_x = (WINDOW_WIDTH - box_w) // 2
             box_y = (WINDOW_HEIGHT - box_h) // 2
@@ -252,7 +250,6 @@ def run_visualization(model):
             )
             screen.blit(prompt, (box_x + 20, box_y + 15))
 
-            # Ô nhập
             input_box = pygame.Rect(box_x + 80, box_y + 50, 240, 35)
             pygame.draw.rect(screen, (60, 60, 80), input_box, border_radius=5)
             pygame.draw.rect(screen, COLOR_EPOCH, input_box, 2, border_radius=5)
@@ -263,6 +260,24 @@ def run_visualization(model):
                 "[Enter] Xac nhan    [Esc] Huy", True, COLOR_TEXT_DIM
             )
             screen.blit(hint, (box_x + 80, box_y + 95))
+
+        elif model.epoch_done:
+            # Epoch kết thúc → hiện overlay chờ
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 100))
+            screen.blit(overlay, (0, 0))
+
+            done_text = font_title.render(
+                f"EPOCH {model.epoch} KET THUC!", True, COLOR_EPOCH
+            )
+            r = done_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 15))
+            screen.blit(done_text, r)
+
+            hint_text = font_large.render(
+                "[N] Epoch moi    [S] Skip toi epoch", True, COLOR_HOTKEY
+            )
+            r2 = hint_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 20))
+            screen.blit(hint_text, r2)
 
         elif paused:
             ps = font_title.render("|| TAM DUNG ||", True, COLOR_HOTKEY)

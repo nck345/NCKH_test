@@ -425,7 +425,8 @@ class TrafficModel(mesa.Model):
         self.num_cars = num_cars
         self.step_count = 0
         self.epoch = 1
-        self.epoch_rewards = []  # Lưu avg reward mỗi epoch
+        self.epoch_done = False       # True = epoch kết thúc, chờ người dùng
+        self.epoch_rewards = []
 
         all_nodes = list(self.G.nodes)
         for _ in range(num_cars):
@@ -436,18 +437,21 @@ class TrafficModel(mesa.Model):
             CarAgent(self, origin, destination)
 
     def step(self):
+        if self.epoch_done:
+            return  # Chờ người dùng ấn N
         update_traffic_lights(self.G)
         self.step_count += 1
         self.agents.shuffle_do("step")
-        # Tự chuyển epoch nếu tất cả đến đích hoặc quá nhiều bước
+        # Đánh dấu kết thúc epoch (KHÔNG tự reset)
         if self.all_reached() or self.step_count >= MAX_STEPS_PER_EPOCH:
-            self.reset_epoch()
+            self.epoch_done = True
 
     def reset_epoch(self):
         """Reset vị trí xe, GIỮ NGUYÊN Q-Table (bộ não đã học)."""
         self.epoch_rewards.append(self.get_avg_reward())
         self.epoch += 1
         self.step_count = 0
+        self.epoch_done = False
 
         all_nodes = list(self.G.nodes)
         for agent in self.agents:
