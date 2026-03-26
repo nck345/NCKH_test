@@ -21,8 +21,7 @@ from config import (
     REWARD_RIGHT_ON_RED,
     PENALTY_RUN_RED,
     PENALTY_COLLISION,
-    PENALTY_STEP,
-    PENALTY_WAIT,
+    PENALTY_TIME,
     PENALTY_UTURN,
     ALLOW_RIGHT_ON_RED,
     NUM_CARS,
@@ -279,17 +278,17 @@ class CarAgent(mesa.Agent):
 
         if action == A_WAIT:
             self.wait_count += 1
-            return PENALTY_WAIT
+            return PENALTY_TIME
 
         if action == A_REROUTE:
             self.wait_count = 0
             self._do_reroute()
-            return PENALTY_WAIT
+            return PENALTY_TIME
 
         # action == A_GO
         if not self.path:
             self.wait_count += 1
-            return PENALTY_WAIT
+            return PENALTY_TIME
 
         next_node = self.path[0]
         light = G.nodes[next_node]["traffic_light"]
@@ -318,7 +317,7 @@ class CarAgent(mesa.Agent):
         self.path.pop(0)
         self.wait_count = 0
 
-        reward = PENALTY_STEP
+        reward = PENALTY_TIME
         if can_right and light == "red":
             reward += REWARD_RIGHT_ON_RED
         return reward
@@ -346,7 +345,7 @@ class CarAgent(mesa.Agent):
 
         # Dừng lại (speed = 0)
         if self.speed <= 0:
-            return PENALTY_WAIT
+            return PENALTY_TIME
 
         # Kiểm tra khoảng cách an toàn
         ahead_dist = self._car_ahead_distance()
@@ -362,7 +361,7 @@ class CarAgent(mesa.Agent):
         if self.edge_progress >= 1.0:
             return self._arrive_at_node()
 
-        return PENALTY_STEP
+        return PENALTY_TIME
 
     def _arrive_at_node(self):
         """Xe đến cuối cạnh → vào ngã tư."""
@@ -384,7 +383,7 @@ class CarAgent(mesa.Agent):
         if light == "red" and not can_right:
             self.edge_progress = 0.98  # Dừng sát ngã tư
             self.speed = 0.0
-            return PENALTY_STEP  # Không phạt, chỉ chờ
+            return PENALTY_TIME  # Không phạt, chỉ chờ
 
         # Ngã tư đầy → chờ
         if self._is_node_full(target):
@@ -409,7 +408,7 @@ class CarAgent(mesa.Agent):
         if not self.path:
             self._recalc_path()
 
-        return PENALTY_STEP
+        return PENALTY_TIME
 
 
 # ===================== TRAFFIC MODEL =====================

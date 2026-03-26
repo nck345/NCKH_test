@@ -8,12 +8,11 @@ File cấu hình tập trung cho toàn bộ mô phỏng.
 #                    BẢNG ĐIỂM THƯỞNG / PHẠT
 # =============================================================
 
-REWARD_REACH_DEST = 20       # Thưởng khi đến đích
+REWARD_REACH_DEST = 100      # Thưởng khi đến đích (Tăng từ 20)
 
-PENALTY_RUN_RED = -50        # Phạt khi vượt đèn đỏ
-PENALTY_COLLISION = -30      # Phạt khi va chạm / gần va chạm
-PENALTY_STEP = -0.1          # Phạt nhẹ mỗi bước (khuyến khích nhanh)
-PENALTY_WAIT = -1.0          # Phạt khi chờ vô ích (đèn xanh mà vẫn đứng)
+PENALTY_RUN_RED = -20        # Phạt khi vượt đèn đỏ (Giảm từ -50)
+PENALTY_COLLISION = -20      # Phạt khi va chạm / gần va chạm (Giảm từ -30)
+PENALTY_TIME = -0.5          # Chi phí thời gian mỗi bước (Gộp từ STEP và WAIT)
 PENALTY_UTURN = -2.0         # Phạt khi quay đầu (tốn thời gian)
 
 # Đèn đỏ rẽ phải
@@ -44,8 +43,8 @@ GRID_COLS = 5
 CELL_SIZE = 140
 MARGIN = 80
 
-LIGHT_CYCLE_MIN = 5         # Chu kỳ đèn ngắn nhất (s)
-LIGHT_CYCLE_MAX = 12        # Chu kỳ đèn dài nhất (s)
+LIGHT_CYCLE_MIN = 10         # Chu kỳ đèn ngắn nhất (s)
+LIGHT_CYCLE_MAX = 20        # Chu kỳ đèn dài nhất (s)
 
 
 # =============================================================
