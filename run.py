@@ -10,14 +10,14 @@ from visualizer import run_visualization
 
 
 def main():
-    # Số xe lấy từ config.py (bạn có thể chỉnh sửa ở đó)
+    # Số xe lấy từ config.py
 
     print("=" * 50)
     print("  MAS Traffic Simulation")
     print("  Mesa  |  NetworkX  |  Pygame")
     print("=" * 50)
-    print(f"  Số xe  : {NUM_CARS}")
-    print("  Nhấn ESC hoặc đóng cửa sổ để thoát.")
+    print(f"  Num Cars: {NUM_CARS}")
+    print("  Press ESC or close window to exit.")
     print("=" * 50)
 
     model = TrafficModel(num_cars=NUM_CARS)

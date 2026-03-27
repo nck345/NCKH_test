@@ -33,7 +33,6 @@ from config import (
     SPEED_ACCEL,
     SPEED_DECEL,
     SAFE_DISTANCE,
-    MAX_CARS_PER_EDGE_DIR,
     LEARNING_RATE,
     DISCOUNT_FACTOR,
     EPSILON_START,
@@ -219,13 +218,6 @@ class CarAgent(mesa.Agent):
                    and a.edge_from == self.edge_from
                    and a.edge_to == self.edge_to)
 
-    def _is_edge_full(self, from_node, to_node):
-        """Kiểm tra cạnh có đầy xe cùng chiều chưa."""
-        count = sum(1 for a in self.model.agents
-                    if a is not self and a.on_edge and not a.reached
-                    and a.edge_from == from_node
-                    and a.edge_to == to_node)
-        return count >= MAX_CARS_PER_EDGE_DIR
 
     def _do_reroute(self):
         crowded = set()
@@ -303,8 +295,10 @@ class CarAgent(mesa.Agent):
             self.wait_count += 1
             return PENALTY_RUN_RED
 
-        # Cạnh cùng chiều đã đầy → không vào được
-        if self._is_edge_full(self.current_node, next_node):
+        # Kiểm tra va chạm khi vào cạnh (có xe nào đang ở đầu cạnh không)
+        cars_on_edge = [a for a in self.model.agents 
+                        if a.on_edge and a.edge_from == self.current_node and a.edge_to == next_node]
+        if any(a.edge_progress < SAFE_DISTANCE for a in cars_on_edge):
             self.wait_count += 1
             return PENALTY_COLLISION
 
