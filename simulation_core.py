@@ -93,6 +93,8 @@ class CarAgent(mesa.Agent):
         self.accumulated_reward = 0.0
         self.reached = False
         self.wait_count = 0
+        self.red_light_count = 0
+        self.collision_count = 0
 
         # --- Q-Learning ---
         self.q_table = defaultdict(float)
@@ -295,6 +297,7 @@ class CarAgent(mesa.Agent):
         # Đèn đỏ + không rẽ phải → vi phạm nếu cố đi
         if light == "red" and not can_right:
             self.wait_count += 1
+            self.red_light_count += 1
             return PENALTY_RUN_RED
 
         # Kiểm tra va chạm khi vào cạnh (có xe nào đang ở đầu cạnh không)
@@ -302,6 +305,7 @@ class CarAgent(mesa.Agent):
                         if a.on_edge and a.edge_from == self.current_node and a.edge_to == next_node]
         if any(a.edge_progress < SAFE_DISTANCE for a in cars_on_edge):
             self.wait_count += 1
+            self.collision_count += 1
             return PENALTY_COLLISION
 
         # Đi vào cạnh
@@ -348,6 +352,7 @@ class CarAgent(mesa.Agent):
         if ahead_dist < SAFE_DISTANCE:
             # Gần va chạm → phạt
             self.speed = 0.0
+            self.collision_count += 1
             return PENALTY_COLLISION
 
         # Di chuyển
@@ -385,6 +390,7 @@ class CarAgent(mesa.Agent):
         if self._is_node_full(target):
             self.edge_progress = 0.98
             self.speed = 0.0
+            self.collision_count += 1
             return PENALTY_COLLISION
 
         # Vào ngã tư thành công
@@ -472,6 +478,8 @@ class TrafficModel(mesa.Model):
             agent.accumulated_reward = 0.0
             agent.reached = False
             agent.wait_count = 0
+            agent.red_light_count = 0
+            agent.collision_count = 0
             agent.last_state = None
             agent.last_action = None
             agent._recalc_path()

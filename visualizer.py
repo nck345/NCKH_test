@@ -285,9 +285,9 @@ def run_visualization(model):
             screen.blit(ps, r)
 
         # === 5) Bảng xe (phải) ===
-        list_x = WINDOW_WIDTH - 380
+        list_x = WINDOW_WIDTH - 520
         list_y = 70
-        list_w = 370
+        list_w = 510
         list_h = 28 + len(agents_list) * 20
         ls = pygame.Surface((list_w, list_h), pygame.SRCALPHA)
         ls.fill((35, 35, 50, 200))
@@ -296,7 +296,7 @@ def run_visualization(model):
                          (list_x, list_y, list_w, list_h), 1, border_radius=4)
 
         header = font_medium.render(
-            " ID  Tu->Den   Speed  Reward   Status", True, COLOR_TEXT
+            " ID  Tu->Den  Speed  Reward  DenDo VaCham  Status", True, COLOR_TEXT
         )
         screen.blit(header, (list_x + 5, list_y + 4))
 
@@ -308,8 +308,11 @@ def run_visualization(model):
 
             st = "DONE" if agent.reached else ("EDGE" if agent.on_edge else "NODE")
             line = (f" {idx:>2}  {agent.origin:>2}->{agent.destination:<2}"
-                    f"  {agent.speed:.2f}  {agent.accumulated_reward:>+7.1f}"
-                    f"   {st}")
+                    f"  {agent.speed:>5.2f}"
+                    f"  {agent.accumulated_reward:>+7.1f}"
+                    f"  {agent.red_light_count:>5}"
+                    f"  {agent.collision_count:>6}"
+                    f"  {st:>10}")
             surf = font_small.render(line, True, COLOR_TEXT)
             screen.blit(surf, (list_x + 20, y))
 

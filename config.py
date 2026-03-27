@@ -39,11 +39,11 @@ SAFE_DISTANCE = 0.2          # Khoảng cách an toàn giữa 2 xe cùng chiều
 # =============================================================
 
 # Loại môi trường: "grid" hoặc "ring"
-ENV_TYPE = "ring"
+ENV_TYPE = "grid"
 
 # --- Grid ---
-GRID_ROWS = 4
-GRID_COLS = 5
+GRID_ROWS = 3
+GRID_COLS = 3
 CELL_SIZE = 140
 MARGIN = 80
 
@@ -81,4 +81,4 @@ EPSILON_DECAY = 0.995
 
 WINDOW_WIDTH = 1100
 WINDOW_HEIGHT = 650
-FPS = 10                     # Tăng FPS vì xe di chuyển liên tục
+FPS = 10                     # Frame per second
