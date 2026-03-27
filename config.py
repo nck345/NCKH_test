@@ -38,10 +38,18 @@ SAFE_DISTANCE = 0.2          # Khoảng cách an toàn giữa 2 xe cùng chiều
 #                    CẤU HÌNH MẠNG LƯỚI (NETWORK)
 # =============================================================
 
+# Loại môi trường: "grid" hoặc "ring"
+ENV_TYPE = "ring"
+
+# --- Grid ---
 GRID_ROWS = 4
 GRID_COLS = 5
 CELL_SIZE = 140
 MARGIN = 80
+
+# --- Ring (vòng tròn khép kín) ---
+RING_NODES = 10              # Số nút trên vòng tròn
+RING_RADIUS = 250            # Bán kính vòng tròn (pixel)
 
 LIGHT_CYCLE_MIN = 10         # Chu kỳ đèn ngắn nhất (s)
 LIGHT_CYCLE_MAX = 20        # Chu kỳ đèn dài nhất (s)

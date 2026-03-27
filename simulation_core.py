@@ -39,8 +39,10 @@ from config import (
     EPSILON_MIN,
     EPSILON_DECAY,
 )
+from config import ENV_TYPE
 from network_manager import (
     create_grid_graph,
+    create_ring_graph,
     update_traffic_lights,
     get_shortest_path,
     is_right_turn,
@@ -414,7 +416,10 @@ class TrafficModel(mesa.Model):
 
     def __init__(self, num_cars=NUM_CARS):
         super().__init__()
-        self.G = create_grid_graph()
+        if ENV_TYPE == "ring":
+            self.G = create_ring_graph()
+        else:
+            self.G = create_grid_graph()
         self.num_cars = num_cars
         self.step_count = 0
         self.epoch = 1
