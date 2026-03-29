@@ -1,47 +1,60 @@
-# Mô phỏng Giao thông Multi-Agent System (MAS)
+# Traffic Simulation (Mesa + tkinter, turn-based)
 
-Dự án mô phỏng giao thông đa tác tử (multi-agent): các xe tự học cách di chuyển tối ưu thông qua cơ chế **Thưởng/Phạt**, trong một thành phố có **đèn giao thông** (môi trường).
+Du an nay mo phong giao thong da tac tu theo kieu **turn-based** tren luoi 7x7.
 
-## Công nghệ
+## Kien truc hien tai
 
-| Thư viện | Vai trò |
-| :--- | :--- |
-| **Mesa** | Framework đa tác tử – `CarAgent(mesa.Agent)` + `TrafficModel(mesa.Model)` |
-| **NetworkX** | Quản lý đồ thị giao thông (nút = ngã tư, cạnh = đường) |
-| **Pygame** | Hiển thị trực quan (vẽ bản đồ, xe, đèn, bảng điểm) |
+- Engine: `Mesa` (`CarAgent`, `TrafficModel`)
+- GUI: `tkinter` (ve den giao thong + xe theo style grid)
+- Cau hinh runtime: `config.json` (duoc validate boi `config_loader.py`)
+- Co che epoch:
+  - ket thuc epoch khi dat dieu kien (`all reached` hoac `max_turns_per_epoch`)
+  - chuyen epoch thu cong
+  - co the skip epoch bang phim tat
 
-## Cấu trúc thư mục
+## Dieu khien
 
-```
+- `Space`: Pause/Resume
+- `N`: Bo qua epoch hien tai va sang epoch tiep theo ngay
+- `S`: Nhap epoch dich de skip nhanh toi epoch do
+- `Esc`: Thoat
+
+## Cau truc thu muc
+
+```text
 NCKH_test/
-├── config.py             # ⚙️ File cấu hình (điểm thưởng/phạt, số xe, kích thước...)
-├── run.py                # Điểm khởi đầu – chạy file này để bắt đầu
-├── network_manager.py    # Tạo bản đồ (NetworkX) + quản lý đèn giao thông (môi trường)
-├── simulation_core.py    # CarAgent (mesa.Agent) + TrafficModel (mesa.Model)
-├── visualizer.py         # Hiển thị Pygame (đường, đèn, xe, bảng điểm)
-└── README.md             # File này
+├── config.json         # Cau hinh runtime chinh
+├── config_loader.py    # Parse + validate config.json
+├── run.py              # Entry point
+├── simulation_core.py  # Model/Agent turn-based + Q-learning + epoch
+├── visualizer.py       # GUI tkinter (grid, den, xe, overlay epoch)
+├── .gitignore
+└── README.md
 ```
 
-## Cơ chế Thưởng/Phạt
-
-| Hành động | Điểm | Ghi chú |
-| :--- | :---: | :--- |
-| Đến đích | **+20** | |
-| Dừng đúng đèn đỏ | **+2** | |
-| Rẽ phải khi đèn đỏ | **0** | Được phép, không phạt |
-| Vượt đèn đỏ (thẳng/trái) | **-15** | |
-| Va chạm | **-10** | |
-| Mỗi bước di chuyển | **-0.1** | |
-
-> Tất cả giá trị trên có thể chỉnh sửa trong `config.py`.
-
-## Cài đặt & Chạy
+## Cai dat
 
 ```bash
-pip install mesa networkx pygame-ce
+pip install mesa
+```
+
+`tkinter` la thu vien built-in cua Python tren phan lon ban phan phoi desktop.
+
+## Chay chuong trinh
+
+```bash
 python run.py
 ```
 
-> **Lưu ý:** Sử dụng `pygame-ce` (community edition) thay vì `pygame` vì Python 3.14 chưa tương thích với `pygame` gốc. API giống hệt nhau.
+## Ghi chu cau hinh
 
-Nhấn **ESC** hoặc đóng cửa sổ để thoát.
+File `config.json` gom cac nhom chinh:
+
+- `simulation`: `max_turns_per_epoch`, `ms_per_turn`, `manual_epoch_advance`
+- `grid`: `size`, `no_cars_per_cell`, `max_cars_per_cell`
+- `cars`: `total_cars`, `spawn_rates`, `multiple_cars_per_turn`
+- `traffic_lights`: `switch_interval`, `initial_state`, `intelligence`
+- `policy`: `priority`
+- `q_learning`: cac he so hoc
+- `rewards`: diem thuong/phat
+- `ui`: kich thuoc cua so + tieu de
