@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import colorsys
 import tkinter as tk
+from tkinter import messagebox, simpledialog
 
 from simulation_core import TrafficModel
 
@@ -30,6 +31,8 @@ class TrafficVisualizer:
         self.reached_var = tk.StringVar()
         self.reward_var = tk.StringVar()
         self.status_var = tk.StringVar()
+        self.notice_var = tk.StringVar()
+        self._notice_ticks = 0
 
         self._build_widgets()
         self._car_colors = self._build_car_palette(self.config.cars.total_cars)
@@ -37,6 +40,8 @@ class TrafficVisualizer:
         self.root.bind("<space>", lambda _: self.toggle_running())
         self.root.bind("<n>", lambda _: self.start_next_epoch())
         self.root.bind("<N>", lambda _: self.start_next_epoch())
+        self.root.bind("<s>", lambda _: self.prompt_skip_epoch())
+        self.root.bind("<S>", lambda _: self.prompt_skip_epoch())
         self.root.bind("<Escape>", lambda _: self._close())
 
         self._refresh_header()
@@ -70,6 +75,14 @@ class TrafficVisualizer:
             font=("Arial", 10, "bold"),
         ).pack(side=tk.RIGHT)
 
+        tk.Label(
+            self.root,
+            textvariable=self.notice_var,
+            fg="#8be9fd",
+            bg="#1a1a2e",
+            font=("Arial", 10, "bold"),
+        ).pack(fill=tk.X, padx=10, pady=(0, 4))
+
         self.canvas = tk.Canvas(self.root, bg="#16213e", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
         self.canvas.bind("<Configure>", lambda _: self._draw_scene())
@@ -87,12 +100,19 @@ class TrafficVisualizer:
 
         self.next_epoch_button = tk.Button(
             controls,
-            text="Next Epoch [N]",
+            text="Next/Skip [N]",
             command=self.start_next_epoch,
             width=14,
-            state=tk.DISABLED,
         )
         self.next_epoch_button.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.skip_button = tk.Button(
+            controls,
+            text="Skip Epoch [S]",
+            command=self.prompt_skip_epoch,
+            width=14,
+        )
+        self.skip_button.pack(side=tk.LEFT, padx=(0, 8))
 
         tk.Button(
             controls,
@@ -123,6 +143,11 @@ class TrafficVisualizer:
                 self.model.reset_epoch()
                 self._running = True
 
+        if self._notice_ticks > 0:
+            self._notice_ticks -= 1
+            if self._notice_ticks == 0:
+                self.notice_var.set("")
+
         self._sync_controls()
         self._refresh_header()
         self._draw_scene()
@@ -132,9 +157,7 @@ class TrafficVisualizer:
         self.pause_button.configure(
             text="Resume [Space]" if not self._running else "Pause [Space]"
         )
-        self.next_epoch_button.configure(
-            state=(tk.NORMAL if self.model.epoch_done else tk.DISABLED)
-        )
+        self.next_epoch_button.configure(state=tk.NORMAL)
 
     def toggle_running(self) -> None:
         if self.model.epoch_done and self.config.simulation.manual_epoch_advance:
@@ -144,10 +167,54 @@ class TrafficVisualizer:
         self._refresh_header()
 
     def start_next_epoch(self) -> None:
-        if not self.model.epoch_done:
-            return
-        self.model.reset_epoch()
+        self.model.skip_current_epoch()
         self._running = True
+        self._set_notice(f"Started epoch {self.model.epoch}")
+        self._sync_controls()
+        self._refresh_header()
+        self._draw_scene()
+
+    def prompt_skip_epoch(self) -> None:
+        was_running = self._running
+        self._running = False
+        self._sync_controls()
+
+        target = simpledialog.askinteger(
+            "Skip Epoch",
+            f"Skip to epoch (current: {self.model.epoch}):",
+            parent=self.root,
+            minvalue=1,
+        )
+        if target is None:
+            if was_running and not self.model.epoch_done:
+                self._running = True
+            self._sync_controls()
+            self._refresh_header()
+            return
+
+        if target <= self.model.epoch:
+            messagebox.showinfo(
+                "Skip Epoch",
+                f"Target epoch must be greater than current epoch ({self.model.epoch}).",
+                parent=self.root,
+            )
+            if was_running and not self.model.epoch_done:
+                self._running = True
+            self._sync_controls()
+            self._refresh_header()
+            return
+
+        self.root.config(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            self.model.skip_to_epoch(target)
+            self._set_notice(f"Skipped to epoch {self.model.epoch}")
+        finally:
+            self.root.config(cursor="")
+
+        if was_running and not self.model.epoch_done:
+            self._running = True
+
         self._sync_controls()
         self._refresh_header()
         self._draw_scene()
@@ -166,6 +233,10 @@ class TrafficVisualizer:
             self.status_var.set("Status: Running")
         else:
             self.status_var.set("Status: Paused")
+
+    def _set_notice(self, message: str, ticks: int = 45) -> None:
+        self.notice_var.set(message)
+        self._notice_ticks = ticks
 
     def _draw_scene(self) -> None:
         canvas = self.canvas

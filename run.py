@@ -24,7 +24,7 @@ def main() -> None:
     print(f" Grid size: {config.grid.size}x{config.grid.size}")
     print(f" Cars: {config.cars.total_cars}")
     print(f" Epoch max turns: {config.simulation.max_turns_per_epoch}")
-    print(" Keys: [Space]=Pause/Resume  [N]=Next Epoch  [Esc]=Quit")
+    print(" Keys: [Space]=Pause/Resume  [N]=Next/Skip Epoch  [S]=Skip To Epoch  [Esc]=Quit")
     print("=" * 60)
 
     model = TrafficModel(config)

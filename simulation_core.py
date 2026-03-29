@@ -280,6 +280,27 @@ class TrafficModel(mesa.Model):
             spawn_turn, start_x, dest_x = schedule
             agent.reset_for_epoch(spawn_turn, start_x, dest_x)
 
+    def skip_to_epoch(self, target_epoch: int) -> None:
+        """
+        Fast-forward simulation to the beginning of target epoch.
+        """
+        if target_epoch <= self.epoch:
+            return
+
+        while self.epoch < target_epoch:
+            if self.epoch_done:
+                self.reset_epoch()
+                continue
+            self.step()
+
+    def skip_current_epoch(self) -> None:
+        """
+        Skip the current epoch immediately and start the next epoch.
+        """
+        if not self.epoch_done:
+            self._finish_epoch()
+        self.reset_epoch()
+
     def all_reached(self) -> bool:
         return all(agent.reached for agent in self.agents)
 
