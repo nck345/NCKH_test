@@ -1,21 +1,26 @@
 {
   "simulation": {
     "max_turns_per_epoch": 400,
-    "ms_per_turn": 120,
+    "ms_per_turn": 500,
     "manual_epoch_advance": true
   },
   "grid": {
-    "size": 7,
+    "size": 11,
     "no_cars_per_cell": 3,
     "max_cars_per_cell": 9
   },
   "cars": {
-    "total_cars": 60,
-    "spawn_rates": [1, 1, 1, 1],
+    "total_cars": 5,
+    "spawn_rates": [
+      1,
+      1,
+      1,
+      1
+    ],
     "multiple_cars_per_turn": true
   },
   "traffic_lights": {
-    "switch_interval": 5,
+    "switch_interval": 10,
     "initial_state": "Green",
     "intelligence": "L0"
   },
@@ -32,8 +37,8 @@
   "rewards": {
     "reach_destination": 25.0,
     "time_penalty": -0.1,
-    "wait_penalty": -0.3,
-    "blocked_penalty": -0.5
+    "run_red_penalty": -12.0,
+    "collision_penalty": -8.0
   },
   "ui": {
     "window_width": 720,

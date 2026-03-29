@@ -70,8 +70,8 @@ class QLearningConfig:
 class RewardsConfig:
     reach_destination: float
     time_penalty: float
-    wait_penalty: float
-    blocked_penalty: float
+    run_red_penalty: float
+    collision_penalty: float
 
 
 @dataclass(frozen=True)
@@ -176,23 +176,38 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     if grid_cfg.max_cars_per_cell > grid_cfg.no_cars_per_cell ** 2:
         raise ValueError("grid.max_cars_per_cell cannot exceed no_cars_per_cell^2.")
 
-    spawn_rates = cars.get("spawn_rates")
-    if not isinstance(spawn_rates, list) or not spawn_rates:
-        raise ValueError("cars.spawn_rates must be a non-empty array of integers.")
-    if not all(isinstance(v, int) and v >= 0 for v in spawn_rates):
-        raise ValueError("cars.spawn_rates must contain integers >= 0.")
+    expected_spawn_len = (grid_cfg.size + 1) // 2
+    raw_spawn_rates = cars.get("spawn_rates")
+    normalized_spawn_rates: list[int]
+
+    if raw_spawn_rates is None:
+        normalized_spawn_rates = [1] * expected_spawn_len
+    else:
+        if not isinstance(raw_spawn_rates, list):
+            raise ValueError("cars.spawn_rates must be an array of integers.")
+        if not raw_spawn_rates:
+            normalized_spawn_rates = [1] * expected_spawn_len
+        else:
+            if not all(isinstance(v, int) and v >= 0 for v in raw_spawn_rates):
+                raise ValueError("cars.spawn_rates must contain integers >= 0.")
+            if len(raw_spawn_rates) >= expected_spawn_len:
+                normalized_spawn_rates = raw_spawn_rates[:expected_spawn_len]
+            else:
+                # Keep user intent and auto-expand by cycling existing values.
+                normalized_spawn_rates = list(raw_spawn_rates)
+                idx = 0
+                while len(normalized_spawn_rates) < expected_spawn_len:
+                    normalized_spawn_rates.append(raw_spawn_rates[idx % len(raw_spawn_rates)])
+                    idx += 1
+
+    if sum(normalized_spawn_rates) <= 0:
+        raise ValueError("cars.spawn_rates must contain at least one value > 0.")
 
     cars_cfg = CarsConfig(
         total_cars=_require_int(cars, "total_cars", minimum=1),
-        spawn_rates=tuple(spawn_rates),
+        spawn_rates=tuple(normalized_spawn_rates),
         multiple_cars_per_turn=_require_bool(cars, "multiple_cars_per_turn"),
     )
-
-    expected_spawn_len = (grid_cfg.size + 1) // 2
-    if len(cars_cfg.spawn_rates) != expected_spawn_len:
-        raise ValueError(
-            f"cars.spawn_rates must have {expected_spawn_len} values for grid.size={grid_cfg.size}."
-        )
 
     initial_state = _require_str(lights, "initial_state")
     if initial_state not in {"Green", "Red"}:
@@ -239,8 +254,8 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     rewards_cfg = RewardsConfig(
         reach_destination=_require_float(rewards, "reach_destination"),
         time_penalty=_require_float(rewards, "time_penalty"),
-        wait_penalty=_require_float(rewards, "wait_penalty"),
-        blocked_penalty=_require_float(rewards, "blocked_penalty"),
+        run_red_penalty=_require_float(rewards, "run_red_penalty"),
+        collision_penalty=_require_float(rewards, "collision_penalty"),
     )
 
     ui_cfg = UIConfig(

@@ -36,6 +36,9 @@ class TrafficVisualizer:
 
         self._build_widgets()
         self._car_colors = self._build_car_palette(self.config.cars.total_cars)
+        self._point_label_by_x = {
+            x: str(idx) for idx, x in enumerate(self.config.starting_point_x)
+        }
 
         self.root.bind("<space>", lambda _: self.toggle_running())
         self.root.bind("<n>", lambda _: self.start_next_epoch())
@@ -45,6 +48,7 @@ class TrafficVisualizer:
         self.root.bind("<Escape>", lambda _: self._close())
 
         self._refresh_header()
+        self._refresh_stats()
         self._draw_scene()
         self.root.after(self.config.simulation.ms_per_turn, self._tick)
 
@@ -121,6 +125,28 @@ class TrafficVisualizer:
             width=12,
         ).pack(side=tk.LEFT)
 
+        stats_frame = tk.Frame(self.root, bg="#1a1a2e")
+        stats_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=(0, 10))
+
+        tk.Label(
+            stats_frame,
+            text="Per-car stats (reward, red-light attempts, collisions)",
+            fg="#dfe6ff",
+            bg="#1a1a2e",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.stats_text = tk.Text(
+            stats_frame,
+            height=10,
+            bg="#0f1733",
+            fg="#dfe6ff",
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+        )
+        self.stats_text.pack(fill=tk.BOTH, expand=False)
+        self.stats_text.configure(state=tk.DISABLED)
+
     def _build_car_palette(self, count: int) -> list[str]:
         palette: list[str] = []
         for idx in range(max(count, 1)):
@@ -150,6 +176,7 @@ class TrafficVisualizer:
 
         self._sync_controls()
         self._refresh_header()
+        self._refresh_stats()
         self._draw_scene()
         self.root.after(self.config.simulation.ms_per_turn, self._tick)
 
@@ -172,6 +199,7 @@ class TrafficVisualizer:
         self._set_notice(f"Started epoch {self.model.epoch}")
         self._sync_controls()
         self._refresh_header()
+        self._refresh_stats()
         self._draw_scene()
 
     def prompt_skip_epoch(self) -> None:
@@ -217,6 +245,7 @@ class TrafficVisualizer:
 
         self._sync_controls()
         self._refresh_header()
+        self._refresh_stats()
         self._draw_scene()
 
     def _refresh_header(self) -> None:
@@ -233,6 +262,34 @@ class TrafficVisualizer:
             self.status_var.set("Status: Running")
         else:
             self.status_var.set("Status: Paused")
+
+    def _refresh_stats(self) -> None:
+        lines = [
+            "ID  From->To   Reward    Red  Coll   Status",
+        ]
+        for agent in sorted(self.model.agents, key=lambda a: a.car_id):
+            if agent.reached:
+                status = "DONE"
+            elif not agent.started:
+                status = "PENDING"
+            else:
+                status = f"({agent.x},{agent.y})"
+
+            from_label = self._point_label(agent.start_x)
+            to_label = self._point_label(agent.destination_x)
+            lines.append(
+                f"{agent.car_id:>2}  "
+                f"{from_label:>2}->{to_label:<2}  "
+                f"{agent.accumulated_reward:>+8.1f}  "
+                f"{agent.red_light_count:>3}  "
+                f"{agent.collision_count:>4}  "
+                f"{status:>8}"
+            )
+
+        self.stats_text.configure(state=tk.NORMAL)
+        self.stats_text.delete("1.0", tk.END)
+        self.stats_text.insert("1.0", "\n".join(lines))
+        self.stats_text.configure(state=tk.DISABLED)
 
     def _set_notice(self, message: str, ticks: int = 45) -> None:
         self.notice_var.set(message)
@@ -307,9 +364,6 @@ class TrafficVisualizer:
             )
 
     def _draw_labels(self, ox: int, oy: int, cell: int) -> None:
-        start_labels = ["A", "B", "C", "D"]
-        dest_labels = ["M", "N", "O", "P"]
-
         for idx, x in enumerate(self.model.config.starting_point_x):
             sx1 = ox + x * cell
             sy1 = oy + self.model.size * cell
@@ -319,7 +373,7 @@ class TrafficVisualizer:
             self.canvas.create_text(
                 sx1 + cell // 2,
                 sy1 + cell // 2,
-                text=start_labels[idx] if idx < len(start_labels) else str(idx),
+                text=str(idx),
                 fill="white",
                 font=("Arial", max(cell // 4, 8), "bold"),
             )
@@ -332,10 +386,13 @@ class TrafficVisualizer:
             self.canvas.create_text(
                 dx1 + cell // 2,
                 dy1 + cell // 2,
-                text=dest_labels[idx] if idx < len(dest_labels) else str(idx),
+                text=str(idx),
                 fill="white",
                 font=("Arial", max(cell // 4, 8), "bold"),
             )
+
+    def _point_label(self, x_coord: int) -> str:
+        return self._point_label_by_x.get(x_coord, str(x_coord))
 
     def _draw_cars(self, ox: int, oy: int, cell: int) -> None:
         slots = self.config.grid.no_cars_per_cell
@@ -382,7 +439,7 @@ class TrafficVisualizer:
         x2 = ox + self.model.size * cell
         y2 = y1 + 24
         self.canvas.create_rectangle(x1, y1, x2, y2, fill="#111936", outline="#2a2a4a")
-        text = "Traffic light: Green=vertical pass, Red=horizontal pass | Car: square + ID"
+        text = "Traffic light preference: Green=vertical, Red=horizontal | Car: square + ID"
         self.canvas.create_text(
             (x1 + x2) // 2,
             (y1 + y2) // 2,

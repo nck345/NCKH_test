@@ -56,5 +56,10 @@ File `config.json` gom cac nhom chinh:
 - `traffic_lights`: `switch_interval`, `initial_state`, `intelligence`
 - `policy`: `priority`
 - `q_learning`: cac he so hoc
-- `rewards`: diem thuong/phat
+- `rewards`: diem thuong/phat (`reach_destination`, `time_penalty`, `run_red_penalty`, `collision_penalty`)
 - `ui`: kich thuoc cua so + tieu de
+
+`spawn_rates` duoc tu dong can chinh theo `grid.size`:
+- neu thieu phan tu: tu dong bo sung
+- neu du phan tu: tu dong cat bot
+- neu bo trong/khong khai bao: mac dinh la `1` cho moi diem spawn

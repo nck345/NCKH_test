@@ -57,6 +57,8 @@ class CarAgent(mesa.Agent):
         self.accumulated_reward = 0.0
         self.blocked_count = 0
         self.wait_count = 0
+        self.red_light_count = 0
+        self.collision_count = 0
         self.turns_alive = 0
 
         self.q_table: defaultdict[tuple[tuple, str], float] = defaultdict(float)
@@ -81,6 +83,8 @@ class CarAgent(mesa.Agent):
         self.accumulated_reward = 0.0
         self.blocked_count = 0
         self.wait_count = 0
+        self.red_light_count = 0
+        self.collision_count = 0
         self.turns_alive = 0
 
     def step(self) -> None:
@@ -98,17 +102,21 @@ class CarAgent(mesa.Agent):
         valid_actions = self.model.get_valid_actions(self)
         action = self._choose_action(state, valid_actions)
 
-        next_pos, moved = self.model.try_move(self, action)
+        next_pos, moved, _, ran_red, collided = self.model.try_move(self, action)
         reward = self.model.config.rewards.time_penalty
 
         if not moved:
             if action == A_WAIT:
                 self.wait_count += 1
-                reward += self.model.config.rewards.wait_penalty
             else:
                 self.blocked_count += 1
-                reward += self.model.config.rewards.blocked_penalty
         else:
+            if ran_red:
+                self.red_light_count += 1
+                reward += self.model.config.rewards.run_red_penalty
+            if collided:
+                self.collision_count += 1
+                reward += self.model.config.rewards.collision_penalty
             self.model.move_agent(self, next_pos)
             if self.y == 0 and self.x == self.destination_x:
                 self.reached = True
@@ -322,22 +330,25 @@ class TrafficModel(mesa.Model):
     def get_light(self, x: int, y: int) -> str | None:
         return self.traffic_lights.get((x, y))
 
-    def can_enter_cell(self, agent: CarAgent, x: int, y: int, action: str) -> bool:
+    def _get_block_reason(
+        self,
+        agent: CarAgent,
+        x: int,
+        y: int,
+        action: str,
+    ) -> str | None:
         if not self.in_bounds(x, y):
-            return False
+            return "out_of_bounds"
 
         if y == self.size:
-            return action == A_WAIT and (x, y) == agent.cell
+            return None if action == A_WAIT and (x, y) == agent.cell else "invalid_start_row"
 
         if self.is_unavailable(x, y):
-            return False
+            return "unavailable"
+        return None
 
-        if not self._light_allows_move(action, x, y):
-            return False
-
-        if self.get_occupancy((x, y)) >= self.config.grid.max_cars_per_cell:
-            return False
-        return True
+    def can_enter_cell(self, agent: CarAgent, x: int, y: int, action: str) -> bool:
+        return self._get_block_reason(agent, x, y, action) is None
 
     def _light_allows_move(self, action: str, x: int, y: int) -> bool:
         light_state = self.get_light(x, y)
@@ -372,14 +383,22 @@ class TrafficModel(mesa.Model):
             return x, y - 1
         return x, y
 
-    def try_move(self, agent: CarAgent, action: str) -> tuple[tuple[int, int], bool]:
+    def try_move(
+        self,
+        agent: CarAgent,
+        action: str,
+    ) -> tuple[tuple[int, int], bool, str | None, bool, bool]:
         if action == A_WAIT:
-            return agent.cell, False
+            return agent.cell, False, None, False, False
 
         nx, ny = self._next_pos(agent.cell, action)
-        if not self.can_enter_cell(agent, nx, ny, action):
-            return agent.cell, False
-        return (nx, ny), True
+        reason = self._get_block_reason(agent, nx, ny, action)
+        if reason is not None:
+            return agent.cell, False, reason, False, False
+
+        ran_red = not self._light_allows_move(action, nx, ny)
+        collided = self.get_occupancy((nx, ny)) >= self.config.grid.max_cars_per_cell
+        return (nx, ny), True, None, ran_red, collided
 
     def move_agent(self, agent: CarAgent, new_pos: tuple[int, int]) -> None:
         old_pos = agent.cell
