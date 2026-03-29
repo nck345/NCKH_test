@@ -1,506 +1,428 @@
 """
-simulation_core.py
--------------------
-Logic đa tác tử dựa trên Mesa + Q-Learning.
-Xe di chuyển LIÊN TỤC trên cạnh (edge) với tốc độ, không nhảy giữa các nút.
-
-Trạng thái xe:
-  - AT_NODE: Đang ở ngã tư → chọn GO / WAIT / REROUTE
-  - ON_EDGE: Đang trên đường → chọn ACCEL / MAINTAIN / DECEL / STOP / U_TURN
-
-MÔI TRƯỜNG quyết định: đèn xoay vòng, va chạm, rẽ phải được phép.
-AGENT quyết định: tất cả hành động di chuyển (học qua Q-Table).
+Turn-based traffic simulation core powered by Mesa.
 """
 
-import random
+from __future__ import annotations
+
 from collections import defaultdict
+from dataclasses import dataclass
+import random
+from typing import Iterable
+
 import mesa
 
-from config import (
-    REWARD_REACH_DEST,
-    REWARD_RIGHT_ON_RED,
-    PENALTY_RUN_RED,
-    PENALTY_COLLISION,
-    PENALTY_TIME,
-    PENALTY_UTURN,
-    ALLOW_RIGHT_ON_RED,
-    NUM_CARS,
-    MAX_CARS_PER_NODE,
-    MAX_STEPS_PER_EPOCH,
-    SPEED_DEFAULT,
-    SPEED_MIN,
-    SPEED_MAX,
-    SPEED_ACCEL,
-    SPEED_DECEL,
-    SAFE_DISTANCE,
-    LEARNING_RATE,
-    DISCOUNT_FACTOR,
-    EPSILON_START,
-    EPSILON_MIN,
-    EPSILON_DECAY,
-)
-from config import ENV_TYPE
-from network_manager import (
-    create_grid_graph,
-    create_ring_graph,
-    update_traffic_lights,
-    get_shortest_path,
-    is_right_turn,
-)
+from config_loader import AppConfig, CarPriority
 
 
-# ===================== ACTIONS =====================
-# Khi ở ngã tư (AT_NODE)
-A_GO = "go"             # Đi vào cạnh tiếp theo
-A_WAIT = "wait"         # Chờ tại ngã tư
-A_REROUTE = "reroute"   # Tìm đường khác
-NODE_ACTIONS = [A_GO, A_WAIT, A_REROUTE]
-
-# Khi đang trên đường (ON_EDGE)
-A_ACCEL = "accel"       # Tăng tốc
-A_MAINTAIN = "maintain"  # Giữ tốc độ
-A_DECEL = "decel"       # Giảm tốc
-A_STOP = "stop"         # Dừng hẳn trên đường
-A_UTURN = "uturn"       # Quay đầu
-EDGE_ACTIONS = [A_ACCEL, A_MAINTAIN, A_DECEL, A_STOP, A_UTURN]
+A_LEFT = "left"
+A_UP = "up"
+A_RIGHT = "right"
+A_WAIT = "wait"
+MOVE_ACTIONS = (A_LEFT, A_UP, A_RIGHT)
+ALL_ACTIONS = (A_LEFT, A_UP, A_RIGHT, A_WAIT)
 
 
-# ===================== CAR AGENT =====================
+@dataclass(frozen=True)
+class EpochSummary:
+    epoch: int
+    turns: int
+    reached: int
+    total: int
+    avg_reward: float
+
+
 class CarAgent(mesa.Agent):
-    """
-    Tác tử xe – di chuyển liên tục trên cạnh.
-    Q-Learning quyết định mọi hành động.
-    """
+    """Discrete-turn car agent with Q-learning + priority fallback."""
 
-    def __init__(self, model, origin, destination):
+    def __init__(
+        self,
+        model: "TrafficModel",
+        car_id: int,
+        spawn_turn: int,
+        start_x: int,
+        destination_x: int,
+    ) -> None:
         super().__init__(model)
-        self.origin = origin
-        self.destination = destination
+        self.car_id = car_id
 
-        # --- Vị trí ---
-        self.current_node = origin     # Nút hiện tại (nếu AT_NODE)
-        self.previous_node = None
-        self.edge_from = None          # Nút đầu cạnh đang đi
-        self.edge_to = None            # Nút cuối cạnh đang đi
-        self.edge_progress = 0.0       # 0.0 (đầu cạnh) → 1.0 (cuối cạnh)
-        self.on_edge = False           # True = đang trên đường
+        self.spawn_turn = spawn_turn
+        self.start_x = start_x
+        self.destination_x = destination_x
 
-        # --- Tốc độ ---
-        self.speed = SPEED_DEFAULT
-
-        # --- Trạng thái ---
-        self.path = []
-        self.accumulated_reward = 0.0
+        self.x = start_x
+        self.y = self.model.size
+        self.started = False
         self.reached = False
+
+        self.accumulated_reward = 0.0
+        self.blocked_count = 0
         self.wait_count = 0
-        self.red_light_count = 0
-        self.collision_count = 0
+        self.turns_alive = 0
 
-        # --- Q-Learning ---
-        self.q_table = defaultdict(float)
-        self.epsilon = EPSILON_START
-        self.last_state = None
-        self.last_action = None
+        self.q_table: defaultdict[tuple[tuple, str], float] = defaultdict(float)
+        self.epsilon = self.model.config.q_learning.epsilon_start
 
-        self._recalc_path()
+    @property
+    def is_active(self) -> bool:
+        return self.started and not self.reached
 
-    # ==================== VỊ TRÍ PIXEL ====================
-    def get_pixel_pos(self):
-        """Trả về tọa độ pixel hiện tại (để Pygame vẽ)."""
-        G = self.model.G
-        if self.on_edge and self.edge_from is not None:
-            p1 = G.nodes[self.edge_from]["pos"]
-            p2 = G.nodes[self.edge_to]["pos"]
-            t = self.edge_progress
-            return (
-                p1[0] + (p2[0] - p1[0]) * t,
-                p1[1] + (p2[1] - p1[1]) * t,
-            )
-        else:
-            return G.nodes[self.current_node]["pos"]
+    @property
+    def cell(self) -> tuple[int, int]:
+        return self.x, self.y
 
-    # ==================== QUAN SÁT ====================
-    def _get_state(self):
-        """Quan sát môi trường → tuple trạng thái cho Q-Table."""
-        G = self.model.G
+    def reset_for_epoch(self, spawn_turn: int, start_x: int, destination_x: int) -> None:
+        self.spawn_turn = spawn_turn
+        self.start_x = start_x
+        self.destination_x = destination_x
+        self.x = start_x
+        self.y = self.model.size
+        self.started = False
+        self.reached = False
+        self.accumulated_reward = 0.0
+        self.blocked_count = 0
+        self.wait_count = 0
+        self.turns_alive = 0
 
-        if self.on_edge:
-            # Đang trên đường
-            progress_bucket = int(self.edge_progress * 4)  # 0,1,2,3
-            speed_bucket = (0 if self.speed <= 0
-                            else 1 if self.speed < SPEED_MAX * 0.6
-                            else 2)
-            car_ahead = self._car_ahead_distance()
-            dist_bucket = (0 if car_ahead < SAFE_DISTANCE
-                           else 1 if car_ahead < SAFE_DISTANCE * 3
-                           else 2)
-            # Đèn cuối đường
-            light = G.nodes[self.edge_to]["traffic_light"]
-            return ("edge", light, progress_bucket, speed_bucket, dist_bucket)
-        else:
-            # Đang ở ngã tư
-            if not self.path:
-                return ("node", "none", 0, 0, False)
-            next_node = self.path[0]
-            light = G.nodes[next_node]["traffic_light"]
-            cars = min(self._count_cars_at(next_node), 2)
-            wait_b = 0 if self.wait_count == 0 else (1 if self.wait_count <= 2 else 2)
-            can_right = (
-                ALLOW_RIGHT_ON_RED
-                and self.previous_node is not None
-                and is_right_turn(G, self.previous_node,
-                                  self.current_node, next_node)
-            )
-            return ("node", light, cars, wait_b, can_right)
-
-    # ==================== Q-LEARNING ====================
-    def _choose_action(self, state):
-        """Epsilon-greedy."""
-        actions = EDGE_ACTIONS if self.on_edge else NODE_ACTIONS
-        if random.random() < self.epsilon:
-            return random.choice(actions)
-        q_vals = [self.q_table[(state, a)] for a in actions]
-        max_q = max(q_vals)
-        best = [a for a, q in zip(actions, q_vals) if q == max_q]
-        return random.choice(best)
-
-    def _update_q(self, state, action, reward, next_state):
-        """Bellman update."""
-        old_q = self.q_table[(state, action)]
-        next_actions = EDGE_ACTIONS if next_state[0] == "edge" else NODE_ACTIONS
-        future_q = max(self.q_table[(next_state, a)] for a in next_actions)
-        new_q = old_q + LEARNING_RATE * (
-            reward + DISCOUNT_FACTOR * future_q - old_q
-        )
-        self.q_table[(state, action)] = new_q
-
-    def _decay_epsilon(self):
-        self.epsilon = max(EPSILON_MIN, self.epsilon * EPSILON_DECAY)
-
-    # ==================== HELPERS ====================
-    def _recalc_path(self, avoid_nodes=None):
-        G = self.model.G
-        src = self.current_node if not self.on_edge else self.edge_to
-        if avoid_nodes:
-            H = G.copy()
-            for n in avoid_nodes:
-                if n != src and n != self.destination:
-                    H.remove_node(n)
-            full_path = get_shortest_path(H, src, self.destination)
-        else:
-            full_path = get_shortest_path(G, src, self.destination)
-        # Nếu on_edge, path bắt đầu từ edge_to
-        if self.on_edge and full_path and full_path[0] == self.edge_to:
-            self.path = full_path[1:]
-        else:
-            self.path = full_path[1:] if len(full_path) > 1 else []
-
-    def _count_cars_at(self, node):
-        return sum(1 for a in self.model.agents
-                   if a is not self and not a.on_edge and not a.reached and a.current_node == node)
-
-    def _is_node_full(self, node):
-        return self._count_cars_at(node) >= MAX_CARS_PER_NODE
-
-    def _car_ahead_distance(self):
-        """Khoảng cách đến xe gần nhất phía trước trên cùng cạnh CÙNG CHIỀU."""
-        min_dist = 999.0
-        for a in self.model.agents:
-            if (a is not self and a.on_edge
-                    and a.edge_from == self.edge_from
-                    and a.edge_to == self.edge_to  # cùng chiều
-                    and a.edge_progress > self.edge_progress):
-                dist = a.edge_progress - self.edge_progress
-                if dist < min_dist:
-                    min_dist = dist
-        return min_dist
-
-    def _count_same_dir_on_edge(self):
-        """Số xe khác đang đi cùng chiều trên cùng cạnh."""
-        return sum(1 for a in self.model.agents
-                   if a is not self and a.on_edge and not a.reached
-                   and a.edge_from == self.edge_from
-                   and a.edge_to == self.edge_to)
-
-
-    def _do_reroute(self):
-        crowded = set()
-        for a in self.model.agents:
-            if a is not self and not a.on_edge and not a.reached:
-                crowded.add(a.current_node)
-        if self.path:
-            crowded.add(self.path[0])
-        self._recalc_path(avoid_nodes=crowded)
-
-    # ==================== BƯỚC MÔ PHỎNG ====================
-    def step(self):
+    def step(self) -> None:
         if self.reached:
             return
 
-        # Đảm bảo có đường
-        if not self.on_edge and not self.path:
-            self._recalc_path()
-            if not self.path:
+        if not self.started:
+            if self.model.turn_count < self.spawn_turn:
                 return
+            self.started = True
+            self.model.add_to_occupancy(self.cell)
 
-        # 1) Quan sát
+        self.turns_alive += 1
         state = self._get_state()
-        # 2) Chọn hành động
-        action = self._choose_action(state)
-        # 3) Thực thi → nhận reward
-        reward = self._execute(action)
-        # 4) Quan sát mới
-        new_state = self._get_state()
-        # 5) Cập nhật Q-Table
-        if self.last_state is not None:
-            self._update_q(self.last_state, self.last_action, reward, state)
-        self.last_state = state
-        self.last_action = action
-        # 6) Epsilon decay
-        self._decay_epsilon()
-        # Tích lũy
-        self.accumulated_reward += reward
+        valid_actions = self.model.get_valid_actions(self)
+        action = self._choose_action(state, valid_actions)
 
-    def _execute(self, action):
-        """Thực thi hành động. MÔI TRƯỜNG trả reward."""
-        if self.on_edge:
-            return self._execute_on_edge(action)
+        next_pos, moved = self.model.try_move(self, action)
+        reward = self.model.config.rewards.time_penalty
+
+        if not moved:
+            if action == A_WAIT:
+                self.wait_count += 1
+                reward += self.model.config.rewards.wait_penalty
+            else:
+                self.blocked_count += 1
+                reward += self.model.config.rewards.blocked_penalty
         else:
-            return self._execute_at_node(action)
+            self.model.move_agent(self, next_pos)
+            if self.y == 0 and self.x == self.destination_x:
+                self.reached = True
+                self.model.remove_from_occupancy(next_pos)
+                reward += self.model.config.rewards.reach_destination
 
-    # ---------- Tại ngã tư ----------
-    def _execute_at_node(self, action):
-        G = self.model.G
+        self.accumulated_reward += reward
+        next_state = self._get_state()
+        next_valid_actions = self.model.get_valid_actions(self)
+        self._update_q(state, action, reward, next_state, next_valid_actions)
+        self._decay_epsilon()
 
-        if action == A_WAIT:
-            self.wait_count += 1
-            return PENALTY_TIME
-
-        if action == A_REROUTE:
-            self.wait_count = 0
-            self._do_reroute()
-            return PENALTY_TIME
-
-        # action == A_GO
-        if not self.path:
-            self.wait_count += 1
-            return PENALTY_TIME
-
-        next_node = self.path[0]
-        light = G.nodes[next_node]["traffic_light"]
-        can_right = (
-            ALLOW_RIGHT_ON_RED
-            and self.previous_node is not None
-            and is_right_turn(G, self.previous_node, self.current_node, next_node)
+    def _get_state(self) -> tuple:
+        left_info = self.model.peek_cell(self, A_LEFT)
+        up_info = self.model.peek_cell(self, A_UP)
+        right_info = self.model.peek_cell(self, A_RIGHT)
+        return (
+            self.x,
+            self.y,
+            self.destination_x,
+            left_info,
+            up_info,
+            right_info,
         )
 
-        # Đèn đỏ + không rẽ phải → vi phạm nếu cố đi
-        if light == "red" and not can_right:
-            self.wait_count += 1
-            self.red_light_count += 1
-            return PENALTY_RUN_RED
+    def _choose_action(self, state: tuple, valid_actions: list[str]) -> str:
+        if not valid_actions:
+            return A_WAIT
 
-        # Kiểm tra va chạm khi vào cạnh (có xe nào đang ở đầu cạnh không)
-        cars_on_edge = [a for a in self.model.agents 
-                        if a.on_edge and a.edge_from == self.current_node and a.edge_to == next_node]
-        if any(a.edge_progress < SAFE_DISTANCE for a in cars_on_edge):
-            self.wait_count += 1
-            self.collision_count += 1
-            return PENALTY_COLLISION
+        if random.random() < self.epsilon:
+            return random.choice(valid_actions)
 
-        # Đi vào cạnh
-        self.on_edge = True
-        self.edge_from = self.current_node
-        self.edge_to = next_node
-        self.edge_progress = 0.0
-        self.speed = SPEED_DEFAULT
-        self.path.pop(0)
-        self.wait_count = 0
+        q_values = {action: self.q_table[(state, action)] for action in valid_actions}
+        max_q = max(q_values.values())
+        best_actions = [a for a, q in q_values.items() if q == max_q]
+        if len(best_actions) == 1:
+            return best_actions[0]
 
-        reward = PENALTY_TIME
-        if can_right and light == "red":
-            reward += REWARD_RIGHT_ON_RED
-        return reward
+        fallback = self.model.priority_fallback(self, valid_actions)
+        if fallback is not None:
+            return fallback
+        return random.choice(best_actions)
 
-    # ---------- Trên đường ----------
-    def _execute_on_edge(self, action):
-        G = self.model.G
+    def _update_q(
+        self,
+        state: tuple,
+        action: str,
+        reward: float,
+        next_state: tuple,
+        next_valid_actions: Iterable[str],
+    ) -> None:
+        alpha = self.model.config.q_learning.learning_rate
+        gamma = self.model.config.q_learning.discount_factor
 
-        # Áp dụng hành động lên tốc độ
-        if action == A_ACCEL:
-            self.speed = min(SPEED_MAX, self.speed + SPEED_ACCEL)
-        elif action == A_DECEL:
-            self.speed = max(SPEED_MIN, self.speed - SPEED_DECEL)
-        elif action == A_STOP:
-            self.speed = 0.0
-        elif action == A_UTURN:
-            # Quay đầu: đổi chiều trên cạnh
-            self.edge_from, self.edge_to = self.edge_to, self.edge_from
-            self.edge_progress = 1.0 - self.edge_progress
-            self.speed = SPEED_DEFAULT * 0.5  # Quay đầu chậm
-            # Tính lại path từ nút mới
-            self._recalc_path()
-            return PENALTY_UTURN
-        # A_MAINTAIN: không thay đổi tốc độ
-
-        # Dừng lại (speed = 0)
-        if self.speed <= 0:
-            return PENALTY_TIME
-
-        # Kiểm tra khoảng cách an toàn
-        ahead_dist = self._car_ahead_distance()
-        if ahead_dist < SAFE_DISTANCE:
-            # Gần va chạm → phạt
-            self.speed = 0.0
-            self.collision_count += 1
-            return PENALTY_COLLISION
-
-        # Di chuyển
-        self.edge_progress += self.speed
-
-        # Đã đến cuối cạnh?
-        if self.edge_progress >= 1.0:
-            return self._arrive_at_node()
-
-        return PENALTY_TIME
-
-    def _arrive_at_node(self):
-        """Xe đến cuối cạnh → vào ngã tư."""
-        G = self.model.G
-        target = self.edge_to
-
-        # Kiểm tra đèn tại ngã tư đích
-        light = G.nodes[target]["traffic_light"]
-        can_right = False
-        if self.edge_from is not None and self.path:
-            next_next = self.path[0] if self.path else None
-            if next_next is not None:
-                can_right = (
-                    ALLOW_RIGHT_ON_RED
-                    and is_right_turn(G, self.edge_from, target, next_next)
-                )
-
-        # Đèn đỏ + không rẽ phải → dừng lại ở cuối cạnh, chờ
-        if light == "red" and not can_right:
-            self.edge_progress = 0.98  # Dừng sát ngã tư
-            self.speed = 0.0
-            return PENALTY_TIME  # Không phạt, chỉ chờ
-
-        # Ngã tư đầy → chờ
-        if self._is_node_full(target):
-            self.edge_progress = 0.98
-            self.speed = 0.0
-            self.collision_count += 1
-            return PENALTY_COLLISION
-
-        # Vào ngã tư thành công
-        self.previous_node = self.edge_from
-        self.current_node = target
-        self.on_edge = False
-        self.edge_from = None
-        self.edge_to = None
-        self.edge_progress = 0.0
-
-        # Đến đích?
-        if self.current_node == self.destination:
-            self.reached = True
-            return REWARD_REACH_DEST
-
-        # Tính lại đường nếu cần
-        if not self.path:
-            self._recalc_path()
-
-        return PENALTY_TIME
-
-
-# ===================== TRAFFIC MODEL =====================
-class TrafficModel(mesa.Model):
-    """
-    Mô hình MÔI TRƯỜNG – chỉ quản lý đèn và đồ thị.
-    Không quyết định thay agent.
-    """
-
-    def __init__(self, num_cars=NUM_CARS):
-        super().__init__()
-        if ENV_TYPE == "ring":
-            self.G = create_ring_graph()
+        old_q = self.q_table[(state, action)]
+        if self.reached:
+            next_max = 0.0
         else:
-            self.G = create_grid_graph()
-        self.num_cars = num_cars
-        self.step_count = 0
+            candidates = [self.q_table[(next_state, a)] for a in next_valid_actions]
+            next_max = max(candidates) if candidates else 0.0
+
+        self.q_table[(state, action)] = old_q + alpha * (reward + gamma * next_max - old_q)
+
+    def _decay_epsilon(self) -> None:
+        cfg = self.model.config.q_learning
+        self.epsilon = max(cfg.epsilon_min, self.epsilon * cfg.epsilon_decay)
+
+
+class TrafficModel(mesa.Model):
+    """Environment-managed traffic simulation with epoch support."""
+
+    def __init__(self, config: AppConfig):
+        super().__init__()
+        self.config = config
+        self.size = config.grid.size
+        self.turn_count = 0
         self.epoch = 1
-        self.epoch_done = False       # True = epoch kết thúc, chờ người dùng
-        self.epoch_rewards = []
-
-        all_nodes = list(self.G.nodes)
-        for _ in range(num_cars):
-            origin = random.choice(all_nodes)
-            destination = random.choice(all_nodes)
-            while destination == origin:
-                destination = random.choice(all_nodes)
-            CarAgent(self, origin, destination)
-
-    def step(self):
-        if self.epoch_done:
-            return  # Chờ người dùng ấn N
-        update_traffic_lights(self.G)
-        self.step_count += 1
-        self.agents.shuffle_do("step")
-        # Đánh dấu kết thúc epoch (KHÔNG tự reset)
-        if self.all_reached() or self.step_count >= MAX_STEPS_PER_EPOCH:
-            self.epoch_done = True
-
-    def reset_epoch(self):
-        """Reset vị trí xe, GIỮ NGUYÊN Q-Table (bộ não đã học)."""
-        self.epoch_rewards.append(self.get_avg_reward())
-        self.epoch += 1
-        self.step_count = 0
         self.epoch_done = False
 
-        all_nodes = list(self.G.nodes)
-        for agent in self.agents:
-            # Vị trí mới ngẫu nhiên
-            origin = random.choice(all_nodes)
-            destination = random.choice(all_nodes)
-            while destination == origin:
-                destination = random.choice(all_nodes)
-            # Reset trạng thái, GIỮ q_table + epsilon
-            agent.origin = origin
-            agent.destination = destination
-            agent.current_node = origin
-            agent.previous_node = None
-            agent.edge_from = None
-            agent.edge_to = None
-            agent.edge_progress = 0.0
-            agent.on_edge = False
-            agent.speed = SPEED_DEFAULT
-            agent.path = []
-            agent.accumulated_reward = 0.0
-            agent.reached = False
-            agent.wait_count = 0
-            agent.red_light_count = 0
-            agent.collision_count = 0
-            agent.last_state = None
-            agent.last_action = None
-            agent._recalc_path()
+        self.last_epoch_summary: EpochSummary | None = None
+        self.epoch_summaries: list[EpochSummary] = []
 
-    def skip_to_epoch(self, target_epoch):
-        """Chạy nhanh (không render) đến epoch mục tiêu."""
-        while self.epoch < target_epoch:
-            for _ in range(MAX_STEPS_PER_EPOCH):
-                update_traffic_lights(self.G)
-                self.step_count += 1
-                self.agents.shuffle_do("step")
-                if self.all_reached() or self.step_count >= MAX_STEPS_PER_EPOCH:
-                    self.reset_epoch()
+        self.traffic_lights: dict[tuple[int, int], str] = {}
+        self._light_timer = 0
+        self._occupancy: dict[tuple[int, int], int] = {}
+
+        self._spawn_schedule: list[tuple[int, int, int]] = self._build_spawn_schedule()
+        self._build_lights()
+        self._create_cars()
+        self._rebuild_occupancy()
+
+    def _create_cars(self) -> None:
+        for car_id, (spawn_turn, start_x, dest_x) in enumerate(self._spawn_schedule):
+            CarAgent(self, car_id, spawn_turn, start_x, dest_x)
+
+    def _build_spawn_schedule(self) -> list[tuple[int, int, int]]:
+        schedule: list[tuple[int, int, int]] = []
+        no_cars_left = self.config.cars.total_cars
+        turn = 1
+        start_points = self.config.starting_point_x
+        spawn_rates = self.config.cars.spawn_rates
+
+        while no_cars_left > 0:
+            for idx, start_x in enumerate(start_points):
+                if no_cars_left <= 0:
                     break
+                rate = spawn_rates[idx]
+                for _ in range(rate):
+                    if no_cars_left <= 0:
+                        break
+                    dest_x = random.choice(self.config.destination_x)
+                    schedule.append((turn, start_x, dest_x))
+                    no_cars_left -= 1
+                    if not self.config.cars.multiple_cars_per_turn:
+                        turn += 1
+            if self.config.cars.multiple_cars_per_turn:
+                turn += 1
+        return schedule
 
-    def get_avg_reward(self):
-        rewards = [a.accumulated_reward for a in self.agents]
-        return sum(rewards) / len(rewards) if rewards else 0
+    def _build_lights(self) -> None:
+        self.traffic_lights.clear()
+        next_state = self.config.traffic_lights.initial_state
+        for y in range(2, self.size - 1, 2):
+            for x in range(0, self.size, 2):
+                self.traffic_lights[(x, y)] = next_state
+                next_state = "Red" if next_state == "Green" else "Green"
+        self._light_timer = 0
 
-    def get_reached_count(self):
-        return sum(1 for a in self.agents if a.reached)
+    def step(self) -> None:
+        if self.epoch_done:
+            return
 
-    def all_reached(self):
-        return all(a.reached for a in self.agents)
+        self.turn_count += 1
+        self._update_traffic_lights()
+        self.agents.shuffle_do("step")
+
+        if self.all_reached() or self.turn_count >= self.config.simulation.max_turns_per_epoch:
+            self._finish_epoch()
+
+    def _update_traffic_lights(self) -> None:
+        self._light_timer += 1
+        if self._light_timer < self.config.traffic_lights.switch_interval:
+            return
+        self._light_timer = 0
+        for pos, state in list(self.traffic_lights.items()):
+            self.traffic_lights[pos] = "Red" if state == "Green" else "Green"
+
+    def _finish_epoch(self) -> None:
+        self.epoch_done = True
+        self.last_epoch_summary = EpochSummary(
+            epoch=self.epoch,
+            turns=self.turn_count,
+            reached=self.get_reached_count(),
+            total=self.config.cars.total_cars,
+            avg_reward=self.get_avg_reward(),
+        )
+        self.epoch_summaries.append(self.last_epoch_summary)
+
+    def reset_epoch(self) -> None:
+        self.epoch += 1
+        self.turn_count = 0
+        self.epoch_done = False
+
+        self._spawn_schedule = self._build_spawn_schedule()
+        self._build_lights()
+        self._occupancy.clear()
+
+        for agent, schedule in zip(self.agents, self._spawn_schedule):
+            spawn_turn, start_x, dest_x = schedule
+            agent.reset_for_epoch(spawn_turn, start_x, dest_x)
+
+    def all_reached(self) -> bool:
+        return all(agent.reached for agent in self.agents)
+
+    def get_reached_count(self) -> int:
+        return sum(1 for agent in self.agents if agent.reached)
+
+    def get_avg_reward(self) -> float:
+        rewards = [agent.accumulated_reward for agent in self.agents]
+        return sum(rewards) / len(rewards) if rewards else 0.0
+
+    def is_unavailable(self, x: int, y: int) -> bool:
+        if y >= self.size:
+            return False
+        return x % 2 == 1 and y % 2 == 1
+
+    def in_bounds(self, x: int, y: int) -> bool:
+        return 0 <= x < self.size and 0 <= y <= self.size
+
+    def get_light(self, x: int, y: int) -> str | None:
+        return self.traffic_lights.get((x, y))
+
+    def can_enter_cell(self, agent: CarAgent, x: int, y: int, action: str) -> bool:
+        if not self.in_bounds(x, y):
+            return False
+
+        if y == self.size:
+            return action == A_WAIT and (x, y) == agent.cell
+
+        if self.is_unavailable(x, y):
+            return False
+
+        if not self._light_allows_move(action, x, y):
+            return False
+
+        if self.get_occupancy((x, y)) >= self.config.grid.max_cars_per_cell:
+            return False
+        return True
+
+    def _light_allows_move(self, action: str, x: int, y: int) -> bool:
+        light_state = self.get_light(x, y)
+        if light_state is None:
+            return True
+        if action == A_UP:
+            return light_state == "Green"
+        if action in (A_LEFT, A_RIGHT):
+            return light_state == "Red"
+        return True
+
+    def get_valid_actions(self, agent: CarAgent) -> list[str]:
+        if not agent.started or agent.reached:
+            return [A_WAIT]
+
+        actions: list[str] = [A_WAIT]
+        for action in MOVE_ACTIONS:
+            nx, ny = self._next_pos(agent.cell, action)
+            if ny == self.size:
+                continue
+            if self.can_enter_cell(agent, nx, ny, action):
+                actions.append(action)
+        return actions
+
+    def _next_pos(self, pos: tuple[int, int], action: str) -> tuple[int, int]:
+        x, y = pos
+        if action == A_LEFT:
+            return x - 1, y
+        if action == A_RIGHT:
+            return x + 1, y
+        if action == A_UP:
+            return x, y - 1
+        return x, y
+
+    def try_move(self, agent: CarAgent, action: str) -> tuple[tuple[int, int], bool]:
+        if action == A_WAIT:
+            return agent.cell, False
+
+        nx, ny = self._next_pos(agent.cell, action)
+        if not self.can_enter_cell(agent, nx, ny, action):
+            return agent.cell, False
+        return (nx, ny), True
+
+    def move_agent(self, agent: CarAgent, new_pos: tuple[int, int]) -> None:
+        old_pos = agent.cell
+        self.remove_from_occupancy(old_pos)
+        agent.x, agent.y = new_pos
+        self.add_to_occupancy(new_pos)
+
+    def _rebuild_occupancy(self) -> None:
+        self._occupancy.clear()
+        for agent in self.agents:
+            if agent.started and not agent.reached:
+                self.add_to_occupancy(agent.cell)
+
+    def add_to_occupancy(self, pos: tuple[int, int]) -> None:
+        self._occupancy[pos] = self._occupancy.get(pos, 0) + 1
+
+    def remove_from_occupancy(self, pos: tuple[int, int]) -> None:
+        if pos not in self._occupancy:
+            return
+        self._occupancy[pos] -= 1
+        if self._occupancy[pos] <= 0:
+            del self._occupancy[pos]
+
+    def get_occupancy(self, pos: tuple[int, int]) -> int:
+        return self._occupancy.get(pos, 0)
+
+    def peek_cell(self, agent: CarAgent, action: str) -> tuple[int, int]:
+        nx, ny = self._next_pos(agent.cell, action)
+        if not self.in_bounds(nx, ny) or ny == self.size or self.is_unavailable(nx, ny):
+            return -1, 0
+        light = self.get_light(nx, ny)
+        light_code = 0 if light is None else (1 if light == "Green" else 2)
+        return min(self.get_occupancy((nx, ny)), self.config.grid.max_cars_per_cell), light_code
+
+    def priority_fallback(self, agent: CarAgent, valid_actions: list[str]) -> str | None:
+        moves = [a for a in valid_actions if a in MOVE_ACTIONS]
+        if not moves:
+            return A_WAIT if A_WAIT in valid_actions else None
+
+        priority = self.config.policy.priority
+        order = self._directional_preference(agent)
+
+        if priority in (CarPriority.NO_PRIORITY, CarPriority.GREEN_LIGHT):
+            for action in order:
+                if action in moves:
+                    return action
+            return moves[0]
+
+        if priority == CarPriority.LOWER_TRAFFIC:
+            scored: list[tuple[int, int, str]] = []
+            for action in moves:
+                nx, ny = self._next_pos(agent.cell, action)
+                occupancy = self.get_occupancy((nx, ny))
+                direction_bias = order.index(action) if action in order else len(order)
+                scored.append((occupancy, direction_bias, action))
+            scored.sort()
+            return scored[0][2]
+
+        return moves[0]
+
+    def _directional_preference(self, agent: CarAgent) -> list[str]:
+        dx = agent.x - agent.destination_x
+        if dx > 0:
+            return [A_LEFT, A_UP, A_RIGHT]
+        if dx < 0:
+            return [A_RIGHT, A_UP, A_LEFT]
+        return [A_UP, A_LEFT, A_RIGHT]

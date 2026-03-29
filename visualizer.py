@@ -1,342 +1,358 @@
 """
-visualizer.py
---------------
-Hiển thị mô phỏng bằng Pygame.
-Xe di chuyển liên tục trên cạnh.
-
-Phím tắt:
-  N     = Chuyển sang epoch mới ngay lập tức
-  S     = Nhập số epoch muốn skip tới (trong console)
-  SPACE = Tạm dừng / tiếp tục
-  ESC   = Thoát
+Tkinter visualizer for the turn-based traffic simulator.
 """
 
-import pygame
-import sys
+from __future__ import annotations
 
-from config import WINDOW_WIDTH, WINDOW_HEIGHT, FPS
+import colorsys
+import tkinter as tk
 
-# --------------- Hằng số hiển thị ---------------
-
-COLOR_BG = (25, 25, 35)
-COLOR_ROAD = (70, 75, 90)
-COLOR_GREEN = (0, 200, 80)
-COLOR_RED = (220, 50, 50)
-COLOR_NODE_BORDER = (180, 180, 200)
-COLOR_TEXT = (230, 230, 230)
-COLOR_TEXT_DIM = (150, 150, 170)
-COLOR_EPOCH = (100, 200, 255)
-COLOR_HOTKEY = (255, 220, 100)
-
-CAR_COLORS = [
-    (255, 210, 60), (60, 180, 255), (255, 100, 150),
-    (100, 255, 150), (255, 160, 60), (180, 120, 255),
-    (255, 255, 130), (100, 220, 220), (255, 130, 130),
-    (130, 255, 200), (200, 200, 100), (220, 160, 220),
-]
-COLOR_CAR_DONE = (200, 200, 200)
-
-NODE_RADIUS = 14
-CAR_RADIUS = 9
+from simulation_core import TrafficModel
 
 
-def run_visualization(model):
-    pygame.init()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("MAS Traffic Simulation – Q-Learning")
-    clock = pygame.time.Clock()
+class TrafficVisualizer:
+    def __init__(self, model: TrafficModel):
+        self.model = model
+        self.config = model.config
+        self._closed = False
+        self._running = True
 
-    font_title = pygame.font.SysFont("consolas", 20, bold=True)
-    font_large = pygame.font.SysFont("consolas", 16, bold=True)
-    font_medium = pygame.font.SysFont("consolas", 13)
-    font_small = pygame.font.SysFont("consolas", 11)
-
-    G = model.G
-    paused = False
-    skip_msg = ""
-    skip_msg_timer = 0
-
-    # Input trong Pygame (không dùng terminal)
-    input_mode = False     # Đang nhập số epoch?
-    input_text = ""        # Chuỗi đang gõ
-
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-            if event.type == pygame.KEYDOWN:
-                # === Chế độ nhập số epoch ===
-                if input_mode:
-                    if event.key == pygame.K_RETURN:
-                        # Xác nhận
-                        try:
-                            target = int(input_text)
-                            if target > model.epoch:
-                                # Vẽ thông báo đang skip
-                                screen.fill(COLOR_BG)
-                                msg = font_title.render(
-                                    f"Skipping to epoch {target}...",
-                                    True, COLOR_EPOCH,
-                                )
-                                r = msg.get_rect(center=(
-                                    WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
-                                ))
-                                screen.blit(msg, r)
-                                pygame.display.flip()
-                                # Skip
-                                model.skip_to_epoch(target)
-                                skip_msg = f">> Da skip toi epoch {model.epoch}"
-                                skip_msg_timer = 120
-                            else:
-                                skip_msg = "Epoch khong hop le!"
-                                skip_msg_timer = 90
-                        except ValueError:
-                            skip_msg = "Nhap sai!"
-                            skip_msg_timer = 60
-                        input_mode = False
-                        input_text = ""
-                        paused = False
-
-                    elif event.key == pygame.K_ESCAPE:
-                        # Hủy nhập
-                        input_mode = False
-                        input_text = ""
-                        paused = False
-
-                    elif event.key == pygame.K_BACKSPACE:
-                        input_text = input_text[:-1]
-
-                    elif event.unicode.isdigit():
-                        input_text += event.unicode
-
-                    continue  # Không xử lý phím tắt khác khi đang nhập
-
-                # === Phím tắt bình thường ===
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-
-                elif event.key == pygame.K_SPACE:
-                    paused = not paused
-
-                elif event.key == pygame.K_n:
-                    # Epoch đã xong → bắt đầu epoch mới
-                    if model.epoch_done:
-                        model.reset_epoch()
-                        skip_msg = f">> Epoch {model.epoch}"
-                        skip_msg_timer = 60
-
-                elif event.key == pygame.K_s:
-                    input_mode = True
-                    input_text = ""
-                    paused = True
-
-        # Bước simulation
-        if not paused:
-            model.step()
-
-        screen.fill(COLOR_BG)
-
-        # === Tiêu đề + Epoch ===
-        title = font_title.render(
-            f"Multi-Agent Traffic Simulation", True, COLOR_TEXT
+        self.root = tk.Tk()
+        self.root.title(self.config.ui.title)
+        self.root.geometry(
+            f"{self.config.ui.window_width}x{self.config.ui.window_height}"
         )
-        screen.blit(title, (15, 8))
+        self.root.configure(bg="#1a1a2e")
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
 
-        epoch_text = font_large.render(
-            f"Epoch: {model.epoch}   Step: {model.step_count}"
-            f"   Reached: {model.get_reached_count()}/{model.num_cars}",
-            True, COLOR_EPOCH,
+        self.epoch_var = tk.StringVar()
+        self.turn_var = tk.StringVar()
+        self.reached_var = tk.StringVar()
+        self.reward_var = tk.StringVar()
+        self.status_var = tk.StringVar()
+
+        self._build_widgets()
+        self._car_colors = self._build_car_palette(self.config.cars.total_cars)
+
+        self.root.bind("<space>", lambda _: self.toggle_running())
+        self.root.bind("<n>", lambda _: self.start_next_epoch())
+        self.root.bind("<N>", lambda _: self.start_next_epoch())
+        self.root.bind("<Escape>", lambda _: self._close())
+
+        self._refresh_header()
+        self._draw_scene()
+        self.root.after(self.config.simulation.ms_per_turn, self._tick)
+
+    def _build_widgets(self) -> None:
+        header = tk.Frame(self.root, bg="#1a1a2e")
+        header.pack(fill=tk.X, padx=10, pady=(10, 6))
+
+        labels = [
+            self.epoch_var,
+            self.turn_var,
+            self.reached_var,
+            self.reward_var,
+        ]
+        for var in labels:
+            tk.Label(
+                header,
+                textvariable=var,
+                fg="#dfe6ff",
+                bg="#1a1a2e",
+                font=("Arial", 10, "bold"),
+            ).pack(side=tk.LEFT, padx=(0, 18))
+
+        tk.Label(
+            header,
+            textvariable=self.status_var,
+            fg="#f7c948",
+            bg="#1a1a2e",
+            font=("Arial", 10, "bold"),
+        ).pack(side=tk.RIGHT)
+
+        self.canvas = tk.Canvas(self.root, bg="#16213e", highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+        self.canvas.bind("<Configure>", lambda _: self._draw_scene())
+
+        controls = tk.Frame(self.root, bg="#1a1a2e")
+        controls.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        self.pause_button = tk.Button(
+            controls,
+            text="Pause [Space]",
+            command=self.toggle_running,
+            width=14,
         )
-        screen.blit(epoch_text, (15, 32))
+        self.pause_button.pack(side=tk.LEFT, padx=(0, 8))
 
-        # === Phím tắt ===
-        keys_text = font_small.render(
-            "[N] Epoch moi   [S] Skip epoch   [SPACE] Tam dung   [ESC] Thoat",
-            True, COLOR_HOTKEY,
+        self.next_epoch_button = tk.Button(
+            controls,
+            text="Next Epoch [N]",
+            command=self.start_next_epoch,
+            width=14,
+            state=tk.DISABLED,
         )
-        screen.blit(keys_text, (15, 54))
+        self.next_epoch_button.pack(side=tk.LEFT, padx=(0, 8))
 
-        # === Thông báo tạm ===
-        if skip_msg_timer > 0:
-            skip_msg_timer -= 1
-            ms = font_large.render(skip_msg, True, COLOR_EPOCH)
-            screen.blit(ms, (WINDOW_WIDTH // 2 - ms.get_width() // 2, 75))
+        tk.Button(
+            controls,
+            text="Quit [Esc]",
+            command=self._close,
+            width=12,
+        ).pack(side=tk.LEFT)
 
-        # === 1) Vẽ đường ===
-        for u, v in G.edges():
-            p1 = G.nodes[u]["pos"]
-            p2 = G.nodes[v]["pos"]
-            pygame.draw.line(screen, COLOR_ROAD, p1, p2, 2)
+    def _build_car_palette(self, count: int) -> list[str]:
+        palette: list[str] = []
+        for idx in range(max(count, 1)):
+            hue = (idx * 0.618033988749895) % 1.0
+            r, g, b = colorsys.hsv_to_rgb(hue, 0.7, 0.9)
+            palette.append(f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}")
+        return palette
 
-        # === 2) Vẽ nút + đèn ===
-        for node_id in G.nodes:
-            data = G.nodes[node_id]
-            pos = data["pos"]
-            pygame.draw.circle(screen, COLOR_NODE_BORDER, pos, NODE_RADIUS + 2)
-            color = COLOR_GREEN if data["traffic_light"] == "green" else COLOR_RED
-            pygame.draw.circle(screen, color, pos, NODE_RADIUS)
-            label = font_small.render(str(node_id), True, (0, 0, 0))
-            rect = label.get_rect(center=pos)
-            screen.blit(label, rect)
+    def _tick(self) -> None:
+        if self._closed:
+            return
 
-        # === 3) Vẽ xe ===
-        agents_list = list(model.agents)
-        for idx, agent in enumerate(agents_list):
-            car_color = (CAR_COLORS[idx % len(CAR_COLORS)]
-                         if not agent.reached else COLOR_CAR_DONE)
+        if self._running and not self.model.epoch_done:
+            self.model.step()
 
-            px, py = agent.get_pixel_pos()
-            draw_pos = (int(px), int(py))
-
-            pygame.draw.circle(screen, (255, 255, 255), draw_pos, CAR_RADIUS + 2)
-            pygame.draw.circle(screen, car_color, draw_pos, CAR_RADIUS)
-
-            # ID
-            id_label = font_small.render(str(idx), True, (0, 0, 0))
-            id_rect = id_label.get_rect(center=draw_pos)
-            screen.blit(id_label, id_rect)
-
-            # Trạng thái nhỏ
-            if agent.reached:
-                st = "DONE"
-            elif agent.on_edge:
-                st = f"v={agent.speed:.2f}"
+        if self.model.epoch_done:
+            if self.config.simulation.manual_epoch_advance:
+                self._running = False
             else:
-                st = f"@{agent.current_node}"
-            st_surf = font_small.render(st, True, car_color)
-            screen.blit(st_surf, (draw_pos[0] + CAR_RADIUS + 3, draw_pos[1] - 6))
+                self.model.reset_epoch()
+                self._running = True
 
-        # === 4) Bảng thống kê (dưới trái) ===
-        panel_y = WINDOW_HEIGHT - 115
-        panel_surf = pygame.Surface((400, 105), pygame.SRCALPHA)
-        panel_surf.fill((35, 35, 50, 220))
-        screen.blit(panel_surf, (10, panel_y))
-        pygame.draw.rect(screen, COLOR_TEXT_DIM,
-                         (10, panel_y, 400, 105), 1, border_radius=6)
+        self._sync_controls()
+        self._refresh_header()
+        self._draw_scene()
+        self.root.after(self.config.simulation.ms_per_turn, self._tick)
 
-        ep_info = [
-            f"Epoch: {model.epoch}    Step: {model.step_count}",
-            f"Xe den dich: {model.get_reached_count()} / {model.num_cars}",
-            f"Diem TB epoch nay: {model.get_avg_reward():+.2f}",
-        ]
-        # Hiện avg reward epoch trước
-        if model.epoch_rewards:
-            ep_info.append(
-                f"Diem TB epoch truoc: {model.epoch_rewards[-1]:+.2f}"
-            )
-
-        for i, line in enumerate(ep_info):
-            surf = font_medium.render(line, True, COLOR_TEXT)
-            screen.blit(surf, (22, panel_y + 8 + i * 20))
-
-        # Tạm dừng / Input overlay / Epoch kết thúc
-        if input_mode:
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 150))
-            screen.blit(overlay, (0, 0))
-
-            box_w, box_h = 400, 120
-            box_x = (WINDOW_WIDTH - box_w) // 2
-            box_y = (WINDOW_HEIGHT - box_h) // 2
-            pygame.draw.rect(screen, (40, 40, 60),
-                             (box_x, box_y, box_w, box_h), border_radius=10)
-            pygame.draw.rect(screen, COLOR_EPOCH,
-                             (box_x, box_y, box_w, box_h), 2, border_radius=10)
-
-            prompt = font_large.render(
-                f"Skip toi epoch (hien tai: {model.epoch})", True, COLOR_TEXT
-            )
-            screen.blit(prompt, (box_x + 20, box_y + 15))
-
-            input_box = pygame.Rect(box_x + 80, box_y + 50, 240, 35)
-            pygame.draw.rect(screen, (60, 60, 80), input_box, border_radius=5)
-            pygame.draw.rect(screen, COLOR_EPOCH, input_box, 2, border_radius=5)
-            txt = font_title.render(input_text + "|", True, COLOR_EPOCH)
-            screen.blit(txt, (input_box.x + 10, input_box.y + 5))
-
-            hint = font_small.render(
-                "[Enter] Xac nhan    [Esc] Huy", True, COLOR_TEXT_DIM
-            )
-            screen.blit(hint, (box_x + 80, box_y + 95))
-
-        elif model.epoch_done:
-            # Epoch kết thúc → hiện overlay chờ
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 100))
-            screen.blit(overlay, (0, 0))
-
-            done_text = font_title.render(
-                f"EPOCH {model.epoch} KET THUC!", True, COLOR_EPOCH
-            )
-            r = done_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 15))
-            screen.blit(done_text, r)
-
-            hint_text = font_large.render(
-                "[N] Epoch moi    [S] Skip toi epoch", True, COLOR_HOTKEY
-            )
-            r2 = hint_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 20))
-            screen.blit(hint_text, r2)
-
-        elif paused:
-            ps = font_title.render("|| TAM DUNG ||", True, COLOR_HOTKEY)
-            r = ps.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
-            screen.blit(ps, r)
-
-        # === 5) Bảng xe (phải) ===
-        list_x = WINDOW_WIDTH - 520
-        list_y = 70
-        list_w = 510
-        list_h = 28 + len(agents_list) * 20
-        ls = pygame.Surface((list_w, list_h), pygame.SRCALPHA)
-        ls.fill((35, 35, 50, 200))
-        screen.blit(ls, (list_x, list_y))
-        pygame.draw.rect(screen, COLOR_TEXT_DIM,
-                         (list_x, list_y, list_w, list_h), 1, border_radius=4)
-
-        header = font_medium.render(
-            " ID  Tu->Den  Speed  Reward  DenDo VaCham  Status", True, COLOR_TEXT
+    def _sync_controls(self) -> None:
+        self.pause_button.configure(
+            text="Resume [Space]" if not self._running else "Pause [Space]"
         )
-        screen.blit(header, (list_x + 5, list_y + 4))
+        self.next_epoch_button.configure(
+            state=(tk.NORMAL if self.model.epoch_done else tk.DISABLED)
+        )
 
-        for idx, agent in enumerate(agents_list):
-            cc = (CAR_COLORS[idx % len(CAR_COLORS)]
-                  if not agent.reached else COLOR_CAR_DONE)
-            y = list_y + 24 + idx * 20
-            pygame.draw.rect(screen, cc, (list_x + 6, y + 2, 10, 10))
+    def toggle_running(self) -> None:
+        if self.model.epoch_done and self.config.simulation.manual_epoch_advance:
+            return
+        self._running = not self._running
+        self._sync_controls()
+        self._refresh_header()
 
-            st = "DONE" if agent.reached else ("EDGE" if agent.on_edge else "NODE")
-            line = (f" {idx:>2}  {agent.origin:>2}->{agent.destination:<2}"
-                    f"  {agent.speed:>5.2f}"
-                    f"  {agent.accumulated_reward:>+7.1f}"
-                    f"  {agent.red_light_count:>5}"
-                    f"  {agent.collision_count:>6}"
-                    f"  {st:>10}")
-            surf = font_small.render(line, True, COLOR_TEXT)
-            screen.blit(surf, (list_x + 20, y))
+    def start_next_epoch(self) -> None:
+        if not self.model.epoch_done:
+            return
+        self.model.reset_epoch()
+        self._running = True
+        self._sync_controls()
+        self._refresh_header()
+        self._draw_scene()
 
-        # === 6) Chú thích ===
-        leg_x = WINDOW_WIDTH - 280
-        leg_y = WINDOW_HEIGHT - 100
-        items = [
-            (COLOR_GREEN, "Nga tu (Xanh)"),
-            (COLOR_RED, "Nga tu (Do)"),
-            (CAR_COLORS[0], "Xe dang di"),
-            (COLOR_CAR_DONE, "Xe da den dich"),
-        ]
-        lgs = pygame.Surface((270, 90), pygame.SRCALPHA)
-        lgs.fill((35, 35, 50, 200))
-        screen.blit(lgs, (leg_x, leg_y))
-        pygame.draw.rect(screen, COLOR_TEXT_DIM,
-                         (leg_x, leg_y, 270, 90), 1, border_radius=4)
-        for i, (c, t) in enumerate(items):
-            y = leg_y + 8 + i * 20
-            pygame.draw.circle(screen, c, (leg_x + 14, y + 6), 5)
-            screen.blit(font_small.render(t, True, COLOR_TEXT), (leg_x + 28, y))
+    def _refresh_header(self) -> None:
+        self.epoch_var.set(f"Epoch: {self.model.epoch}")
+        self.turn_var.set(f"Turn: {self.model.turn_count}")
+        self.reached_var.set(
+            f"Reached: {self.model.get_reached_count()}/{self.config.cars.total_cars}"
+        )
+        self.reward_var.set(f"Avg Reward: {self.model.get_avg_reward():+.2f}")
 
-        pygame.display.flip()
-        clock.tick(FPS)
+        if self.model.epoch_done:
+            self.status_var.set("Status: Epoch complete")
+        elif self._running:
+            self.status_var.set("Status: Running")
+        else:
+            self.status_var.set("Status: Paused")
 
-    pygame.quit()
-    sys.exit()
+    def _draw_scene(self) -> None:
+        canvas = self.canvas
+        canvas.delete("all")
+
+        w = max(canvas.winfo_width(), 100)
+        h = max(canvas.winfo_height(), 100)
+        size = self.model.size
+
+        cell_size = min((w - 60) // size, (h - 120) // (size + 2))
+        if cell_size < 8:
+            return
+
+        grid_w = size * cell_size
+        grid_h = size * cell_size
+        origin_x = (w - grid_w) // 2
+        origin_y = (h - (grid_h + (2 * cell_size))) // 2 + cell_size
+
+        self._draw_grid(origin_x, origin_y, cell_size)
+        self._draw_unavailable_cells(origin_x, origin_y, cell_size)
+        self._draw_traffic_lights(origin_x, origin_y, cell_size)
+        self._draw_labels(origin_x, origin_y, cell_size)
+        self._draw_cars(origin_x, origin_y, cell_size)
+        self._draw_legend(origin_x, origin_y, cell_size)
+
+        if self.model.epoch_done:
+            self._draw_epoch_overlay(w, h)
+
+    def _draw_grid(self, ox: int, oy: int, cell: int) -> None:
+        size = self.model.size
+        x2 = ox + size * cell
+        y2 = oy + size * cell
+        self.canvas.create_rectangle(ox, oy, x2, y2, fill="#111936", outline="#3b4a77", width=2)
+
+        for i in range(size + 1):
+            self.canvas.create_line(ox, oy + i * cell, x2, oy + i * cell, fill="#2a2a4a")
+            self.canvas.create_line(ox + i * cell, oy, ox + i * cell, y2, fill="#2a2a4a")
+
+    def _draw_unavailable_cells(self, ox: int, oy: int, cell: int) -> None:
+        for y in range(1, self.model.size, 2):
+            for x in range(1, self.model.size, 2):
+                x1 = ox + x * cell
+                y1 = oy + y * cell
+                self.canvas.create_rectangle(
+                    x1, y1, x1 + cell, y1 + cell, fill="#0f0f23", outline="#0f0f23"
+                )
+
+    def _draw_traffic_lights(self, ox: int, oy: int, cell: int) -> None:
+        bar = max(cell // 10, 2)
+        for (x, y), state in self.model.traffic_lights.items():
+            x1 = ox + x * cell
+            y1 = oy + y * cell
+
+            top_bottom = "#00e676" if state == "Green" else "#ff1744"
+            left_right = "#ff1744" if state == "Green" else "#00e676"
+
+            self.canvas.create_rectangle(
+                x1, y1, x1 + bar, y1 + cell, fill=left_right, outline=left_right
+            )
+            self.canvas.create_rectangle(
+                x1 + cell - bar, y1, x1 + cell, y1 + cell, fill=left_right, outline=left_right
+            )
+            self.canvas.create_rectangle(
+                x1, y1, x1 + cell, y1 + bar, fill=top_bottom, outline=top_bottom
+            )
+            self.canvas.create_rectangle(
+                x1, y1 + cell - bar, x1 + cell, y1 + cell, fill=top_bottom, outline=top_bottom
+            )
+
+    def _draw_labels(self, ox: int, oy: int, cell: int) -> None:
+        start_labels = ["A", "B", "C", "D"]
+        dest_labels = ["M", "N", "O", "P"]
+
+        for idx, x in enumerate(self.model.config.starting_point_x):
+            sx1 = ox + x * cell
+            sy1 = oy + self.model.size * cell
+            self.canvas.create_rectangle(
+                sx1, sy1, sx1 + cell, sy1 + cell, fill="#4a6fa5", outline="#5a7fb5"
+            )
+            self.canvas.create_text(
+                sx1 + cell // 2,
+                sy1 + cell // 2,
+                text=start_labels[idx] if idx < len(start_labels) else str(idx),
+                fill="white",
+                font=("Arial", max(cell // 4, 8), "bold"),
+            )
+
+            dx1 = sx1
+            dy1 = oy - cell
+            self.canvas.create_rectangle(
+                dx1, dy1, dx1 + cell, dy1 + cell, fill="#3a5f45", outline="#4a7055"
+            )
+            self.canvas.create_text(
+                dx1 + cell // 2,
+                dy1 + cell // 2,
+                text=dest_labels[idx] if idx < len(dest_labels) else str(idx),
+                fill="white",
+                font=("Arial", max(cell // 4, 8), "bold"),
+            )
+
+    def _draw_cars(self, ox: int, oy: int, cell: int) -> None:
+        slots = self.config.grid.no_cars_per_cell
+        max_slots = slots * slots
+        sub_size = max(cell // slots, 6)
+        cars_per_cell: dict[tuple[int, int], int] = {}
+
+        for agent in self.model.agents:
+            if not agent.started or agent.reached:
+                continue
+
+            pos = agent.cell
+            count = cars_per_cell.get(pos, 0)
+            slot_index = min(count, max_slots - 1)
+            cars_per_cell[pos] = count + 1
+
+            oxi = (slot_index // slots) * sub_size
+            oyi = (slot_index % slots) * sub_size
+
+            x, y = pos
+            base_x = ox + x * cell
+            base_y = oy + y * cell
+
+            rx1 = base_x + oxi
+            ry1 = base_y + oyi
+            rx2 = rx1 + sub_size
+            ry2 = ry1 + sub_size
+
+            color = self._car_colors[agent.car_id % len(self._car_colors)]
+            self.canvas.create_rectangle(
+                rx1, ry1, rx2, ry2, fill=color, outline="#ffffff", width=1
+            )
+            self.canvas.create_text(
+                (rx1 + rx2) // 2,
+                (ry1 + ry2) // 2,
+                text=str(agent.car_id),
+                fill="black",
+                font=("Arial", max(sub_size // 3, 6), "bold"),
+            )
+
+    def _draw_legend(self, ox: int, oy: int, cell: int) -> None:
+        x1 = ox
+        y1 = oy + self.model.size * cell + cell + 8
+        x2 = ox + self.model.size * cell
+        y2 = y1 + 24
+        self.canvas.create_rectangle(x1, y1, x2, y2, fill="#111936", outline="#2a2a4a")
+        text = "Traffic light: Green=vertical pass, Red=horizontal pass | Car: square + ID"
+        self.canvas.create_text(
+            (x1 + x2) // 2,
+            (y1 + y2) // 2,
+            text=text,
+            fill="#cdd6ff",
+            font=("Arial", 9),
+        )
+
+    def _draw_epoch_overlay(self, w: int, h: int) -> None:
+        summary = self.model.last_epoch_summary
+        self.canvas.create_rectangle(
+            0, 0, w, h, fill="#000000", stipple="gray50", outline=""
+        )
+
+        lines = [f"EPOCH {self.model.epoch} COMPLETE"]
+        if summary is not None:
+            lines.extend(
+                [
+                    f"Turns: {summary.turns}",
+                    f"Reached: {summary.reached}/{summary.total}",
+                    f"Average reward: {summary.avg_reward:+.2f}",
+                ]
+            )
+        lines.append("Press [N] or click Next Epoch")
+
+        for idx, line in enumerate(lines):
+            self.canvas.create_text(
+                w // 2,
+                h // 2 - 45 + idx * 22,
+                text=line,
+                fill="#f7f7ff" if idx == 0 else "#d0d9ff",
+                font=("Arial", 14 if idx == 0 else 12, "bold" if idx == 0 else "normal"),
+            )
+
+    def _close(self) -> None:
+        self._closed = True
+        self.root.destroy()
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+
+def run_visualization(model: TrafficModel) -> None:
+    TrafficVisualizer(model).run()
