@@ -63,3 +63,7 @@ File `config.json` gom cac nhom chinh:
 - neu thieu phan tu: tu dong bo sung
 - neu du phan tu: tu dong cat bot
 - neu bo trong/khong khai bao: mac dinh la `1` cho moi diem spawn
+
+Tuong tu, mot so tham so phu thuoc cung duoc tu can chinh:
+- `grid.max_cars_per_cell` se tu clamp theo `no_cars_per_cell^2`
+- cac gia tri `q_learning` (`learning_rate`, `discount_factor`, `epsilon_*`) se tu clamp vao mien hop le

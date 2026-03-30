@@ -166,15 +166,18 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         manual_epoch_advance=_require_bool(sim, "manual_epoch_advance"),
     )
 
+    size = _require_int(grid, "size", minimum=3)
+    no_cars_per_cell = _require_int(grid, "no_cars_per_cell", minimum=1)
+    max_cars_per_cell = _require_int(grid, "max_cars_per_cell", minimum=1)
+
+    # Auto-normalize dependent grid fields so editing one field is enough.
+    hard_cap = no_cars_per_cell ** 2
+    max_cars_per_cell = min(max_cars_per_cell, hard_cap)
     grid_cfg = GridConfig(
-        size=_require_int(grid, "size", minimum=3),
-        no_cars_per_cell=_require_int(grid, "no_cars_per_cell", minimum=1),
-        max_cars_per_cell=_require_int(grid, "max_cars_per_cell", minimum=1),
+        size=size,
+        no_cars_per_cell=no_cars_per_cell,
+        max_cars_per_cell=max_cars_per_cell,
     )
-    if grid_cfg.size % 2 == 0:
-        raise ValueError("grid.size must be odd (7, 9, ...).")
-    if grid_cfg.max_cars_per_cell > grid_cfg.no_cars_per_cell ** 2:
-        raise ValueError("grid.max_cars_per_cell cannot exceed no_cars_per_cell^2.")
 
     expected_spawn_len = (grid_cfg.size + 1) // 2
     raw_spawn_rates = cars.get("spawn_rates")
@@ -201,7 +204,7 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
                     idx += 1
 
     if sum(normalized_spawn_rates) <= 0:
-        raise ValueError("cars.spawn_rates must contain at least one value > 0.")
+        normalized_spawn_rates[0] = 1
 
     cars_cfg = CarsConfig(
         total_cars=_require_int(cars, "total_cars", minimum=1),
@@ -234,22 +237,26 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         ) from exc
     policy_cfg = PolicyConfig(priority=priority)
 
-    ql_cfg = QLearningConfig(
-        learning_rate=_require_float(ql, "learning_rate"),
-        discount_factor=_require_float(ql, "discount_factor"),
-        epsilon_start=_require_float(ql, "epsilon_start"),
-        epsilon_min=_require_float(ql, "epsilon_min"),
-        epsilon_decay=_require_float(ql, "epsilon_decay"),
-    )
+    learning_rate = _require_float(ql, "learning_rate")
+    discount_factor = _require_float(ql, "discount_factor")
+    epsilon_start = _require_float(ql, "epsilon_start")
+    epsilon_min = _require_float(ql, "epsilon_min")
+    epsilon_decay = _require_float(ql, "epsilon_decay")
 
-    if not (0.0 <= ql_cfg.learning_rate <= 1.0):
-        raise ValueError("q_learning.learning_rate must be in [0, 1].")
-    if not (0.0 <= ql_cfg.discount_factor <= 1.0):
-        raise ValueError("q_learning.discount_factor must be in [0, 1].")
-    if not (0.0 <= ql_cfg.epsilon_min <= ql_cfg.epsilon_start <= 1.0):
-        raise ValueError("q_learning epsilon values must satisfy 0 <= min <= start <= 1.")
-    if not (0.0 < ql_cfg.epsilon_decay <= 1.0):
-        raise ValueError("q_learning.epsilon_decay must be in (0, 1].")
+    # Auto-normalize dependent q-learning fields.
+    learning_rate = min(max(learning_rate, 0.0), 1.0)
+    discount_factor = min(max(discount_factor, 0.0), 1.0)
+    epsilon_start = min(max(epsilon_start, 0.0), 1.0)
+    epsilon_min = min(max(epsilon_min, 0.0), epsilon_start)
+    epsilon_decay = min(max(epsilon_decay, 1e-6), 1.0)
+
+    ql_cfg = QLearningConfig(
+        learning_rate=learning_rate,
+        discount_factor=discount_factor,
+        epsilon_start=epsilon_start,
+        epsilon_min=epsilon_min,
+        epsilon_decay=epsilon_decay,
+    )
 
     rewards_cfg = RewardsConfig(
         reach_destination=_require_float(rewards, "reach_destination"),

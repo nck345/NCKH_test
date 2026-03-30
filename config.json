@@ -6,7 +6,7 @@
   },
   "grid": {
     "size": 11,
-    "no_cars_per_cell": 3,
+    "no_cars_per_cell": 2,
     "max_cars_per_cell": 9
   },
   "cars": {
