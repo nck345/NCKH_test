@@ -7,6 +7,9 @@ Du an nay mo phong giao thong da tac tu theo kieu **turn-based** tren luoi 7x7.
 - Engine: `Mesa` (`CarAgent`, `TrafficModel`)
 - GUI: `tkinter` (ve den giao thong + xe theo style grid)
 - Cau hinh runtime: `config.json` (duoc validate boi `config_loader.py`)
+- Duong 2 chieu dang nut giao chu thap: moi truc duong co 2 dai o (moi dai la 1 chieu)
+- Vung giao lo trung tam gom 4 o (2x2) co den giao thong
+- Moi o chi cho phep toi da 1 xe
 - Co che epoch:
   - ket thuc epoch khi dat dieu kien (`all reached` hoac `max_turns_per_epoch`)
   - chuyen epoch thu cong
@@ -56,14 +59,14 @@ File `config.json` gom cac nhom chinh:
 - `traffic_lights`: `switch_interval`, `initial_state`, `intelligence`
 - `policy`: `priority`
 - `q_learning`: cac he so hoc
-- `rewards`: diem thuong/phat (`reach_destination`, `time_penalty`, `run_red_penalty`, `collision_penalty`)
+- `rewards`: diem thuong/phat (`reach_destination`, `time_penalty`, `run_red_penalty`, `wrong_way_penalty`, `collision_penalty`)
 - `ui`: kich thuoc cua so + tieu de
 
-`spawn_rates` duoc tu dong can chinh theo `grid.size`:
+`spawn_rates` duoc tu dong can chinh theo `grid.size`, sau do duoc map vao 4 huong vao giao lo:
 - neu thieu phan tu: tu dong bo sung
 - neu du phan tu: tu dong cat bot
 - neu bo trong/khong khai bao: mac dinh la `1` cho moi diem spawn
 
 Tuong tu, mot so tham so phu thuoc cung duoc tu can chinh:
-- `grid.max_cars_per_cell` se tu clamp theo `no_cars_per_cell^2`
+- `grid.max_cars_per_cell` duoc co dinh ve `1` de dam bao moi o chi co 1 xe
 - cac gia tri `q_learning` (`learning_rate`, `discount_factor`, `epsilon_*`) se tu clamp vao mien hop le

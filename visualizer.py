@@ -8,7 +8,7 @@ import colorsys
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
-from simulation_core import TrafficModel
+from simulation_core import A_DOWN, A_LEFT, A_RIGHT, A_UP, TrafficModel
 
 
 class TrafficVisualizer:
@@ -36,9 +36,6 @@ class TrafficVisualizer:
 
         self._build_widgets()
         self._car_colors = self._build_car_palette(self.config.cars.total_cars)
-        self._point_label_by_x = {
-            x: str(idx) for idx, x in enumerate(self.config.starting_point_x)
-        }
 
         self.root.bind("<space>", lambda _: self.toggle_running())
         self.root.bind("<n>", lambda _: self.start_next_epoch())
@@ -130,7 +127,7 @@ class TrafficVisualizer:
 
         tk.Label(
             stats_frame,
-            text="Per-car stats (reward, red-light attempts, collisions)",
+            text="Per-car stats (reward, red-light attempts, wrong-way, blocked)",
             fg="#dfe6ff",
             bg="#1a1a2e",
             font=("Arial", 10, "bold"),
@@ -265,7 +262,7 @@ class TrafficVisualizer:
 
     def _refresh_stats(self) -> None:
         lines = [
-            "ID  From->To   Reward    Red  Coll   Status",
+            "ID  From->To   Reward    Red Wrong Block   Status",
         ]
         for agent in sorted(self.model.agents, key=lambda a: a.car_id):
             if agent.reached:
@@ -275,14 +272,15 @@ class TrafficVisualizer:
             else:
                 status = f"({agent.x},{agent.y})"
 
-            from_label = self._point_label(agent.start_x)
-            to_label = self._point_label(agent.destination_x)
+            from_label = self.model.point_label((agent.start_x, agent.start_y))
+            to_label = self.model.point_label((agent.destination_x, agent.destination_y))
             lines.append(
                 f"{agent.car_id:>2}  "
-                f"{from_label:>2}->{to_label:<2}  "
+                f"{from_label:>3}->{to_label:<3}  "
                 f"{agent.accumulated_reward:>+8.1f}  "
-                f"{agent.red_light_count:>3}  "
-                f"{agent.collision_count:>4}  "
+                f"{agent.red_light_count:>3} "
+                f"{agent.wrong_way_count:>5} "
+                f"{agent.blocked_count:>5}  "
                 f"{status:>8}"
             )
 
@@ -303,17 +301,18 @@ class TrafficVisualizer:
         h = max(canvas.winfo_height(), 100)
         size = self.model.size
 
-        cell_size = min((w - 60) // size, (h - 120) // (size + 2))
+        cell_size = min((w - 80) // size, (h - 140) // size)
         if cell_size < 8:
             return
 
         grid_w = size * cell_size
         grid_h = size * cell_size
         origin_x = (w - grid_w) // 2
-        origin_y = (h - (grid_h + (2 * cell_size))) // 2 + cell_size
+        origin_y = (h - grid_h) // 2
 
-        self._draw_grid(origin_x, origin_y, cell_size)
-        self._draw_unavailable_cells(origin_x, origin_y, cell_size)
+        self._draw_grid_background(origin_x, origin_y, cell_size)
+        self._draw_road_cells(origin_x, origin_y, cell_size)
+        self._draw_intersection_frame(origin_x, origin_y, cell_size)
         self._draw_traffic_lights(origin_x, origin_y, cell_size)
         self._draw_labels(origin_x, origin_y, cell_size)
         self._draw_cars(origin_x, origin_y, cell_size)
@@ -322,124 +321,181 @@ class TrafficVisualizer:
         if self.model.epoch_done:
             self._draw_epoch_overlay(w, h)
 
-    def _draw_grid(self, ox: int, oy: int, cell: int) -> None:
+    def _draw_grid_background(self, ox: int, oy: int, cell: int) -> None:
         size = self.model.size
         x2 = ox + size * cell
         y2 = oy + size * cell
-        self.canvas.create_rectangle(ox, oy, x2, y2, fill="#111936", outline="#3b4a77", width=2)
+        self.canvas.create_rectangle(
+            ox,
+            oy,
+            x2,
+            y2,
+            fill="#d9d9d9",
+            outline="#bdbdbd",
+            width=2,
+        )
 
-        for i in range(size + 1):
-            self.canvas.create_line(ox, oy + i * cell, x2, oy + i * cell, fill="#2a2a4a")
-            self.canvas.create_line(ox + i * cell, oy, ox + i * cell, y2, fill="#2a2a4a")
-
-    def _draw_unavailable_cells(self, ox: int, oy: int, cell: int) -> None:
-        for y in range(1, self.model.size, 2):
-            for x in range(1, self.model.size, 2):
-                x1 = ox + x * cell
-                y1 = oy + y * cell
+    def _draw_road_cells(self, ox: int, oy: int, cell: int) -> None:
+        gap = max(cell // 7, 2)
+        for y in range(self.model.size):
+            for x in range(self.model.size):
+                if not self.model.is_road_cell(x, y):
+                    continue
+                x1 = ox + x * cell + gap
+                y1 = oy + y * cell + gap
+                x2 = ox + (x + 1) * cell - gap
+                y2 = oy + (y + 1) * cell - gap
                 self.canvas.create_rectangle(
-                    x1, y1, x1 + cell, y1 + cell, fill="#0f0f23", outline="#0f0f23"
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    fill="#1dd8de",
+                    outline="#1dd8de",
                 )
 
+    def _draw_intersection_frame(self, ox: int, oy: int, cell: int) -> None:
+        left_col = min(self.model.road_cols)
+        right_col = max(self.model.road_cols)
+        top_row = min(self.model.road_rows)
+        bottom_row = max(self.model.road_rows)
+
+        x1 = ox + left_col * cell
+        x2 = ox + (right_col + 1) * cell
+        y1 = oy + top_row * cell
+        y2 = oy + (bottom_row + 1) * cell
+
+        line_w = max(cell // 10, 3)
+        side_pad = max(cell // 8, 3)
+        self.canvas.create_line(
+            x1 - side_pad,
+            y1 - side_pad,
+            x2 + side_pad,
+            y1 - side_pad,
+            fill="#ff1f1f",
+            width=line_w,
+        )
+        self.canvas.create_line(
+            x1 - side_pad,
+            y2 + side_pad,
+            x2 + side_pad,
+            y2 + side_pad,
+            fill="#ff1f1f",
+            width=line_w,
+        )
+        self.canvas.create_line(
+            x1 - side_pad,
+            y1 - side_pad,
+            x1 - side_pad,
+            y2 + side_pad,
+            fill="#18e218",
+            width=line_w,
+        )
+        self.canvas.create_line(
+            x2 + side_pad,
+            y1 - side_pad,
+            x2 + side_pad,
+            y2 + side_pad,
+            fill="#18e218",
+            width=line_w,
+        )
+
     def _draw_traffic_lights(self, ox: int, oy: int, cell: int) -> None:
-        bar = max(cell // 10, 2)
+        radius = max(cell // 7, 3)
         for (x, y), state in self.model.traffic_lights.items():
-            x1 = ox + x * cell
-            y1 = oy + y * cell
-
-            top_bottom = "#00e676" if state == "Green" else "#ff1744"
-            left_right = "#ff1744" if state == "Green" else "#00e676"
-
-            self.canvas.create_rectangle(
-                x1, y1, x1 + bar, y1 + cell, fill=left_right, outline=left_right
-            )
-            self.canvas.create_rectangle(
-                x1 + cell - bar, y1, x1 + cell, y1 + cell, fill=left_right, outline=left_right
-            )
-            self.canvas.create_rectangle(
-                x1, y1, x1 + cell, y1 + bar, fill=top_bottom, outline=top_bottom
-            )
-            self.canvas.create_rectangle(
-                x1, y1 + cell - bar, x1 + cell, y1 + cell, fill=top_bottom, outline=top_bottom
+            cx = ox + x * cell + (cell // 2)
+            cy = oy + y * cell + (cell // 2)
+            color = "#00e676" if state == "Green" else "#ff1744"
+            self.canvas.create_oval(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                fill=color,
+                outline="#202020",
+                width=1,
             )
 
     def _draw_labels(self, ox: int, oy: int, cell: int) -> None:
-        for idx, x in enumerate(self.model.config.starting_point_x):
-            sx1 = ox + x * cell
-            sy1 = oy + self.model.size * cell
-            self.canvas.create_rectangle(
-                sx1, sy1, sx1 + cell, sy1 + cell, fill="#4a6fa5", outline="#5a7fb5"
-            )
+        size = self.model.size
+        for (x, y), label in sorted(self.model.endpoint_labels.items()):
+            cx = ox + x * cell + (cell // 2)
+            cy = oy + y * cell + (cell // 2)
+            tx = cx
+            ty = cy
+            if x == 0:
+                tx = cx - max(cell // 2, 10)
+            elif x == size - 1:
+                tx = cx + max(cell // 2, 10)
+            elif y == 0:
+                ty = cy - max(cell // 2, 10)
+            elif y == size - 1:
+                ty = cy + max(cell // 2, 10)
+
             self.canvas.create_text(
-                sx1 + cell // 2,
-                sy1 + cell // 2,
-                text=str(idx),
-                fill="white",
+                tx,
+                ty,
+                text=label,
+                fill="#3d3d3d",
                 font=("Arial", max(cell // 4, 8), "bold"),
             )
-
-            dx1 = sx1
-            dy1 = oy - cell
-            self.canvas.create_rectangle(
-                dx1, dy1, dx1 + cell, dy1 + cell, fill="#3a5f45", outline="#4a7055"
-            )
-            self.canvas.create_text(
-                dx1 + cell // 2,
-                dy1 + cell // 2,
-                text=str(idx),
-                fill="white",
-                font=("Arial", max(cell // 4, 8), "bold"),
-            )
-
-    def _point_label(self, x_coord: int) -> str:
-        return self._point_label_by_x.get(x_coord, str(x_coord))
 
     def _draw_cars(self, ox: int, oy: int, cell: int) -> None:
-        slots = self.config.grid.no_cars_per_cell
-        max_slots = slots * slots
-        sub_size = max(cell // slots, 6)
-        cars_per_cell: dict[tuple[int, int], int] = {}
-
+        flow_tag = {
+            A_UP: "U",
+            A_DOWN: "D",
+            A_LEFT: "L",
+            A_RIGHT: "R",
+            None: "X",
+        }
         for agent in self.model.agents:
             if not agent.started or agent.reached:
                 continue
 
-            pos = agent.cell
-            count = cars_per_cell.get(pos, 0)
-            slot_index = min(count, max_slots - 1)
-            cars_per_cell[pos] = count + 1
-
-            oxi = (slot_index // slots) * sub_size
-            oyi = (slot_index % slots) * sub_size
-
-            x, y = pos
+            x, y = agent.cell
             base_x = ox + x * cell
             base_y = oy + y * cell
-
-            rx1 = base_x + oxi
-            ry1 = base_y + oyi
-            rx2 = rx1 + sub_size
-            ry2 = ry1 + sub_size
+            margin = max(cell // 5, 3)
+            rx1 = base_x + margin
+            ry1 = base_y + margin
+            rx2 = base_x + cell - margin
+            ry2 = base_y + cell - margin
 
             color = self._car_colors[agent.car_id % len(self._car_colors)]
+            border = "#ff5252" if agent.last_wrong_way else "#ffffff"
             self.canvas.create_rectangle(
-                rx1, ry1, rx2, ry2, fill=color, outline="#ffffff", width=1
+                rx1,
+                ry1,
+                rx2,
+                ry2,
+                fill=color,
+                outline=border,
+                width=2,
+            )
+
+            tag = flow_tag[self.model.get_cell_flow(agent.cell)]
+            self.canvas.create_text(
+                (rx1 + rx2) // 2,
+                ((ry1 + ry2) // 2) - max(cell // 8, 2),
+                text=str(agent.car_id),
+                fill="#121212",
+                font=("Arial", max(cell // 4, 7), "bold"),
             )
             self.canvas.create_text(
                 (rx1 + rx2) // 2,
-                (ry1 + ry2) // 2,
-                text=str(agent.car_id),
-                fill="black",
-                font=("Arial", max(sub_size // 3, 6), "bold"),
+                ((ry1 + ry2) // 2) + max(cell // 8, 2),
+                text=tag,
+                fill="#121212",
+                font=("Arial", max(cell // 5, 7), "bold"),
             )
 
     def _draw_legend(self, ox: int, oy: int, cell: int) -> None:
         x1 = ox
-        y1 = oy + self.model.size * cell + cell + 8
+        y1 = oy + self.model.size * cell + 8
         x2 = ox + self.model.size * cell
         y2 = y1 + 24
         self.canvas.create_rectangle(x1, y1, x2, y2, fill="#111936", outline="#2a2a4a")
-        text = "Traffic light preference: Green=vertical, Red=horizontal | Car: square + ID"
+        text = "Cyan cells = drivable cells | Center 2x2 = signal junction | Red car border = wrong-way penalty"
         self.canvas.create_text(
             (x1 + x2) // 2,
             (y1 + y2) // 2,

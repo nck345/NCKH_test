@@ -17,9 +17,12 @@ from config_loader import AppConfig, CarPriority
 A_LEFT = "left"
 A_UP = "up"
 A_RIGHT = "right"
+A_DOWN = "down"
 A_WAIT = "wait"
-MOVE_ACTIONS = (A_LEFT, A_UP, A_RIGHT)
-ALL_ACTIONS = (A_LEFT, A_UP, A_RIGHT, A_WAIT)
+
+MOVE_ACTIONS = (A_LEFT, A_UP, A_RIGHT, A_DOWN)
+ALL_ACTIONS = (A_LEFT, A_UP, A_RIGHT, A_DOWN, A_WAIT)
+ACTION_ORDER = (A_UP, A_RIGHT, A_DOWN, A_LEFT)
 
 
 @dataclass(frozen=True)
@@ -40,17 +43,21 @@ class CarAgent(mesa.Agent):
         car_id: int,
         spawn_turn: int,
         start_x: int,
+        start_y: int,
         destination_x: int,
+        destination_y: int,
     ) -> None:
         super().__init__(model)
         self.car_id = car_id
 
         self.spawn_turn = spawn_turn
         self.start_x = start_x
+        self.start_y = start_y
         self.destination_x = destination_x
+        self.destination_y = destination_y
 
         self.x = start_x
-        self.y = self.model.size
+        self.y = start_y
         self.started = False
         self.reached = False
 
@@ -58,8 +65,12 @@ class CarAgent(mesa.Agent):
         self.blocked_count = 0
         self.wait_count = 0
         self.red_light_count = 0
+        self.wrong_way_count = 0
         self.collision_count = 0
         self.turns_alive = 0
+
+        self.last_action = A_WAIT
+        self.last_wrong_way = False
 
         self.q_table: defaultdict[tuple[tuple, str], float] = defaultdict(float)
         self.epsilon = self.model.config.q_learning.epsilon_start
@@ -72,20 +83,32 @@ class CarAgent(mesa.Agent):
     def cell(self) -> tuple[int, int]:
         return self.x, self.y
 
-    def reset_for_epoch(self, spawn_turn: int, start_x: int, destination_x: int) -> None:
+    def reset_for_epoch(
+        self,
+        spawn_turn: int,
+        start_x: int,
+        start_y: int,
+        destination_x: int,
+        destination_y: int,
+    ) -> None:
         self.spawn_turn = spawn_turn
         self.start_x = start_x
+        self.start_y = start_y
         self.destination_x = destination_x
+        self.destination_y = destination_y
         self.x = start_x
-        self.y = self.model.size
+        self.y = start_y
         self.started = False
         self.reached = False
         self.accumulated_reward = 0.0
         self.blocked_count = 0
         self.wait_count = 0
         self.red_light_count = 0
+        self.wrong_way_count = 0
         self.collision_count = 0
         self.turns_alive = 0
+        self.last_action = A_WAIT
+        self.last_wrong_way = False
 
     def step(self) -> None:
         if self.reached:
@@ -94,6 +117,9 @@ class CarAgent(mesa.Agent):
         if not self.started:
             if self.model.turn_count < self.spawn_turn:
                 return
+            if self.model.get_occupancy(self.cell) >= self.model.cell_capacity:
+                self.blocked_count += 1
+                return
             self.started = True
             self.model.add_to_occupancy(self.cell)
 
@@ -101,9 +127,11 @@ class CarAgent(mesa.Agent):
         state = self._get_state()
         valid_actions = self.model.get_valid_actions(self)
         action = self._choose_action(state, valid_actions)
+        self.last_action = action
 
-        next_pos, moved, _, ran_red, collided = self.model.try_move(self, action)
+        next_pos, moved, _, ran_red, wrong_way = self.model.try_move(self, action)
         reward = self.model.config.rewards.time_penalty
+        self.last_wrong_way = False
 
         if not moved:
             if action == A_WAIT:
@@ -114,11 +142,12 @@ class CarAgent(mesa.Agent):
             if ran_red:
                 self.red_light_count += 1
                 reward += self.model.config.rewards.run_red_penalty
-            if collided:
-                self.collision_count += 1
-                reward += self.model.config.rewards.collision_penalty
+            if wrong_way:
+                self.wrong_way_count += 1
+                self.last_wrong_way = True
+                reward += self.model.config.rewards.wrong_way_penalty
             self.model.move_agent(self, next_pos)
-            if self.y == 0 and self.x == self.destination_x:
+            if self.y == self.destination_y and self.x == self.destination_x:
                 self.reached = True
                 self.model.remove_from_occupancy(next_pos)
                 reward += self.model.config.rewards.reach_destination
@@ -133,13 +162,18 @@ class CarAgent(mesa.Agent):
         left_info = self.model.peek_cell(self, A_LEFT)
         up_info = self.model.peek_cell(self, A_UP)
         right_info = self.model.peek_cell(self, A_RIGHT)
+        down_info = self.model.peek_cell(self, A_DOWN)
+        flow = self.model.get_cell_flow(self.cell)
         return (
             self.x,
             self.y,
             self.destination_x,
+            self.destination_y,
+            flow,
             left_info,
             up_info,
             right_info,
+            down_info,
         )
 
     def _choose_action(self, state: tuple, valid_actions: list[str]) -> str:
@@ -192,6 +226,10 @@ class TrafficModel(mesa.Model):
         super().__init__()
         self.config = config
         self.size = config.grid.size
+        if self.size < 5:
+            raise ValueError("grid.size must be >= 5 for a 2x2 intersection layout.")
+
+        self.cell_capacity = config.grid.max_cars_per_cell
         self.turn_count = 0
         self.epoch = 1
         self.epoch_done = False
@@ -203,46 +241,129 @@ class TrafficModel(mesa.Model):
         self._light_timer = 0
         self._occupancy: dict[tuple[int, int], int] = {}
 
-        self._spawn_schedule: list[tuple[int, int, int]] = self._build_spawn_schedule()
+        self.center_right = self.size // 2
+        self.center_left = self.center_right - 1
+        self.road_cols = (self.center_left, self.center_right)
+        self.road_rows = (self.center_left, self.center_right)
+        self.intersection_cells = frozenset(
+            {
+                (self.center_left, self.center_left),
+                (self.center_left, self.center_right),
+                (self.center_right, self.center_left),
+                (self.center_right, self.center_right),
+            }
+        )
+        self.road_cells = frozenset(self._build_road_cells())
+
+        self.endpoint_labels = self._build_endpoint_labels()
+        self._spawn_lanes = self._build_spawn_lanes()
+        self._spawn_schedule: list[tuple[int, int, int, int, int]] = self._build_spawn_schedule()
+
         self._build_lights()
         self._create_cars()
         self._rebuild_occupancy()
 
-    def _create_cars(self) -> None:
-        for car_id, (spawn_turn, start_x, dest_x) in enumerate(self._spawn_schedule):
-            CarAgent(self, car_id, spawn_turn, start_x, dest_x)
+    def _build_road_cells(self) -> set[tuple[int, int]]:
+        cells: set[tuple[int, int]] = set()
+        for y in self.road_rows:
+            for x in range(self.size):
+                cells.add((x, y))
+        for x in self.road_cols:
+            for y in range(self.size):
+                cells.add((x, y))
+        return cells
 
-    def _build_spawn_schedule(self) -> list[tuple[int, int, int]]:
-        schedule: list[tuple[int, int, int]] = []
+    def _build_endpoint_labels(self) -> dict[tuple[int, int], str]:
+        top_y = 0
+        bottom_y = self.size - 1
+        left_x = 0
+        right_x = self.size - 1
+
+        return {
+            (left_x, self.road_rows[0]): "W1",
+            (left_x, self.road_rows[1]): "W2",
+            (right_x, self.road_rows[0]): "E1",
+            (right_x, self.road_rows[1]): "E2",
+            (self.road_cols[0], top_y): "N1",
+            (self.road_cols[1], top_y): "N2",
+            (self.road_cols[0], bottom_y): "S1",
+            (self.road_cols[1], bottom_y): "S2",
+        }
+
+    def _build_spawn_lanes(self) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+        return [
+            ((0, self.road_rows[0]), (self.size - 1, self.road_rows[0])),
+            ((self.size - 1, self.road_rows[1]), (0, self.road_rows[1])),
+            ((self.road_cols[0], self.size - 1), (self.road_cols[0], 0)),
+            ((self.road_cols[1], 0), (self.road_cols[1], self.size - 1)),
+        ]
+
+    def point_label(self, pos: tuple[int, int]) -> str:
+        return self.endpoint_labels.get(pos, f"{pos[0]},{pos[1]}")
+
+    def get_cell_flow(self, pos: tuple[int, int]) -> str | None:
+        x, y = pos
+        if pos in self.intersection_cells:
+            return None
+        if y == self.road_rows[0]:
+            return A_RIGHT
+        if y == self.road_rows[1]:
+            return A_LEFT
+        if x == self.road_cols[0]:
+            return A_UP
+        if x == self.road_cols[1]:
+            return A_DOWN
+        return None
+
+    def _create_cars(self) -> None:
+        for car_id, schedule in enumerate(self._spawn_schedule):
+            spawn_turn, start_x, start_y, dest_x, dest_y = schedule
+            CarAgent(
+                self,
+                car_id,
+                spawn_turn,
+                start_x,
+                start_y,
+                dest_x,
+                dest_y,
+            )
+
+    def _build_spawn_schedule(self) -> list[tuple[int, int, int, int, int]]:
+        lane_count = len(self._spawn_lanes)
+        rates = list(self.config.cars.spawn_rates)
+        if not rates:
+            rates = [1]
+        lane_rates = [rates[idx % len(rates)] for idx in range(lane_count)]
+        if sum(lane_rates) <= 0:
+            lane_rates[0] = 1
+
+        schedule: list[tuple[int, int, int, int, int]] = []
         no_cars_left = self.config.cars.total_cars
         turn = 1
-        start_points = self.config.starting_point_x
-        spawn_rates = self.config.cars.spawn_rates
 
         while no_cars_left > 0:
-            for idx, start_x in enumerate(start_points):
+            for lane_idx, (start_pos, dest_pos) in enumerate(self._spawn_lanes):
                 if no_cars_left <= 0:
                     break
-                rate = spawn_rates[idx]
+                rate = lane_rates[lane_idx]
                 for _ in range(rate):
                     if no_cars_left <= 0:
                         break
-                    dest_x = random.choice(self.config.destination_x)
-                    schedule.append((turn, start_x, dest_x))
+                    start_x, start_y = start_pos
+                    dest_x, dest_y = dest_pos
+                    schedule.append((turn, start_x, start_y, dest_x, dest_y))
                     no_cars_left -= 1
                     if not self.config.cars.multiple_cars_per_turn:
                         turn += 1
             if self.config.cars.multiple_cars_per_turn:
                 turn += 1
+
         return schedule
 
     def _build_lights(self) -> None:
         self.traffic_lights.clear()
-        next_state = self.config.traffic_lights.initial_state
-        for y in range(2, self.size - 1, 2):
-            for x in range(0, self.size, 2):
-                self.traffic_lights[(x, y)] = next_state
-                next_state = "Red" if next_state == "Green" else "Green"
+        for pos in sorted(self.intersection_cells):
+            self.traffic_lights[pos] = self.config.traffic_lights.initial_state
         self._light_timer = 0
 
     def step(self) -> None:
@@ -285,8 +406,14 @@ class TrafficModel(mesa.Model):
         self._occupancy.clear()
 
         for agent, schedule in zip(self.agents, self._spawn_schedule):
-            spawn_turn, start_x, dest_x = schedule
-            agent.reset_for_epoch(spawn_turn, start_x, dest_x)
+            spawn_turn, start_x, start_y, dest_x, dest_y = schedule
+            agent.reset_for_epoch(
+                spawn_turn,
+                start_x,
+                start_y,
+                dest_x,
+                dest_y,
+            )
 
     def skip_to_epoch(self, target_epoch: int) -> None:
         """
@@ -319,13 +446,14 @@ class TrafficModel(mesa.Model):
         rewards = [agent.accumulated_reward for agent in self.agents]
         return sum(rewards) / len(rewards) if rewards else 0.0
 
+    def is_road_cell(self, x: int, y: int) -> bool:
+        return (x, y) in self.road_cells
+
     def is_unavailable(self, x: int, y: int) -> bool:
-        if y >= self.size:
-            return False
-        return x % 2 == 1 and y % 2 == 1
+        return not self.is_road_cell(x, y)
 
     def in_bounds(self, x: int, y: int) -> bool:
-        return 0 <= x < self.size and 0 <= y <= self.size
+        return 0 <= x < self.size and 0 <= y < self.size
 
     def get_light(self, x: int, y: int) -> str | None:
         return self.traffic_lights.get((x, y))
@@ -339,12 +467,10 @@ class TrafficModel(mesa.Model):
     ) -> str | None:
         if not self.in_bounds(x, y):
             return "out_of_bounds"
-
-        if y == self.size:
-            return None if action == A_WAIT and (x, y) == agent.cell else "invalid_start_row"
-
         if self.is_unavailable(x, y):
-            return "unavailable"
+            return "not_road"
+        if self.get_occupancy((x, y)) >= self.cell_capacity:
+            return "occupied"
         return None
 
     def can_enter_cell(self, agent: CarAgent, x: int, y: int, action: str) -> bool:
@@ -354,7 +480,7 @@ class TrafficModel(mesa.Model):
         light_state = self.get_light(x, y)
         if light_state is None:
             return True
-        if action == A_UP:
+        if action in (A_UP, A_DOWN):
             return light_state == "Green"
         if action in (A_LEFT, A_RIGHT):
             return light_state == "Red"
@@ -367,8 +493,6 @@ class TrafficModel(mesa.Model):
         actions: list[str] = [A_WAIT]
         for action in MOVE_ACTIONS:
             nx, ny = self._next_pos(agent.cell, action)
-            if ny == self.size:
-                continue
             if self.can_enter_cell(agent, nx, ny, action):
                 actions.append(action)
         return actions
@@ -381,7 +505,27 @@ class TrafficModel(mesa.Model):
             return x + 1, y
         if action == A_UP:
             return x, y - 1
+        if action == A_DOWN:
+            return x, y + 1
         return x, y
+
+    def _is_wrong_way_move(
+        self,
+        agent: CarAgent,
+        action: str,
+        next_pos: tuple[int, int],
+    ) -> bool:
+        if action not in MOVE_ACTIONS:
+            return False
+
+        current_flow = self.get_cell_flow(agent.cell)
+        next_flow = self.get_cell_flow(next_pos)
+
+        if current_flow is not None and action != current_flow:
+            return True
+        if next_flow is not None and action != next_flow:
+            return True
+        return False
 
     def try_move(
         self,
@@ -397,8 +541,8 @@ class TrafficModel(mesa.Model):
             return agent.cell, False, reason, False, False
 
         ran_red = not self._light_allows_move(action, nx, ny)
-        collided = self.get_occupancy((nx, ny)) >= self.config.grid.max_cars_per_cell
-        return (nx, ny), True, None, ran_red, collided
+        wrong_way = self._is_wrong_way_move(agent, action, (nx, ny))
+        return (nx, ny), True, None, ran_red, wrong_way
 
     def move_agent(self, agent: CarAgent, new_pos: tuple[int, int]) -> None:
         old_pos = agent.cell
@@ -427,11 +571,11 @@ class TrafficModel(mesa.Model):
 
     def peek_cell(self, agent: CarAgent, action: str) -> tuple[int, int]:
         nx, ny = self._next_pos(agent.cell, action)
-        if not self.in_bounds(nx, ny) or ny == self.size or self.is_unavailable(nx, ny):
+        if not self.in_bounds(nx, ny) or self.is_unavailable(nx, ny):
             return -1, 0
         light = self.get_light(nx, ny)
         light_code = 0 if light is None else (1 if light == "Green" else 2)
-        return min(self.get_occupancy((nx, ny)), self.config.grid.max_cars_per_cell), light_code
+        return min(self.get_occupancy((nx, ny)), self.cell_capacity), light_code
 
     def priority_fallback(self, agent: CarAgent, valid_actions: list[str]) -> str | None:
         moves = [a for a in valid_actions if a in MOVE_ACTIONS]
@@ -448,21 +592,28 @@ class TrafficModel(mesa.Model):
             return moves[0]
 
         if priority == CarPriority.LOWER_TRAFFIC:
-            scored: list[tuple[int, int, str]] = []
+            scored: list[tuple[int, int, int, str]] = []
             for action in moves:
                 nx, ny = self._next_pos(agent.cell, action)
                 occupancy = self.get_occupancy((nx, ny))
+                wrong_way_bias = 1 if self._is_wrong_way_move(agent, action, (nx, ny)) else 0
                 direction_bias = order.index(action) if action in order else len(order)
-                scored.append((occupancy, direction_bias, action))
+                scored.append((occupancy, wrong_way_bias, direction_bias, action))
             scored.sort()
-            return scored[0][2]
+            return scored[0][3]
 
         return moves[0]
 
     def _directional_preference(self, agent: CarAgent) -> list[str]:
-        dx = agent.x - agent.destination_x
-        if dx > 0:
-            return [A_LEFT, A_UP, A_RIGHT]
-        if dx < 0:
-            return [A_RIGHT, A_UP, A_LEFT]
-        return [A_UP, A_LEFT, A_RIGHT]
+        scored: list[tuple[int, int, int, str]] = []
+        current_flow = self.get_cell_flow(agent.cell)
+        for idx, action in enumerate(ACTION_ORDER):
+            nx, ny = self._next_pos(agent.cell, action)
+            if not self.in_bounds(nx, ny):
+                continue
+            wrong_way = 1 if self._is_wrong_way_move(agent, action, (nx, ny)) else 0
+            flow_bias = 0 if current_flow is None or action == current_flow else 1
+            distance = abs(nx - agent.destination_x) + abs(ny - agent.destination_y)
+            scored.append((wrong_way, flow_bias, distance, action))
+        scored.sort(key=lambda item: (item[0], item[1], item[2], ACTION_ORDER.index(item[3])))
+        return [action for _, _, _, action in scored]

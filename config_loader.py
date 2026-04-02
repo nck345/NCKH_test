@@ -71,6 +71,7 @@ class RewardsConfig:
     reach_destination: float
     time_penalty: float
     run_red_penalty: float
+    wrong_way_penalty: float
     collision_penalty: float
 
 
@@ -170,9 +171,8 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     no_cars_per_cell = _require_int(grid, "no_cars_per_cell", minimum=1)
     max_cars_per_cell = _require_int(grid, "max_cars_per_cell", minimum=1)
 
-    # Auto-normalize dependent grid fields so editing one field is enough.
-    hard_cap = no_cars_per_cell ** 2
-    max_cars_per_cell = min(max_cars_per_cell, hard_cap)
+    # Realistic single-lane occupancy: every cell can hold exactly one car.
+    max_cars_per_cell = 1
     grid_cfg = GridConfig(
         size=size,
         no_cars_per_cell=no_cars_per_cell,
@@ -262,6 +262,7 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         reach_destination=_require_float(rewards, "reach_destination"),
         time_penalty=_require_float(rewards, "time_penalty"),
         run_red_penalty=_require_float(rewards, "run_red_penalty"),
+        wrong_way_penalty=_require_float(rewards, "wrong_way_penalty"),
         collision_penalty=_require_float(rewards, "collision_penalty"),
     )
 
