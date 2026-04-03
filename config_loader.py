@@ -36,6 +36,7 @@ class GridConfig:
     size: int
     no_cars_per_cell: int
     max_cars_per_cell: int
+    intersection_spacing_cells: int
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,20 @@ def _require_float(section: dict[str, Any], key: str) -> float:
     return float(value)
 
 
+def _optional_int(
+    section: dict[str, Any],
+    key: str,
+    default: int,
+    minimum: int = 0,
+) -> int:
+    value = section.get(key, default)
+    if not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer.")
+    if value < minimum:
+        raise ValueError(f"{key} must be >= {minimum}.")
+    return value
+
+
 def _require_bool(section: dict[str, Any], key: str) -> bool:
     value = section.get(key)
     if not isinstance(value, bool):
@@ -170,6 +185,12 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
     size = _require_int(grid, "size", minimum=3)
     no_cars_per_cell = _require_int(grid, "no_cars_per_cell", minimum=1)
     max_cars_per_cell = _require_int(grid, "max_cars_per_cell", minimum=1)
+    intersection_spacing_cells = _optional_int(
+        grid,
+        "intersection_spacing_cells",
+        default=1,
+        minimum=1,
+    )
 
     # Realistic single-lane occupancy: every cell can hold exactly one car.
     max_cars_per_cell = 1
@@ -177,6 +198,7 @@ def load_config(path: str | Path = "config.json") -> AppConfig:
         size=size,
         no_cars_per_cell=no_cars_per_cell,
         max_cars_per_cell=max_cars_per_cell,
+        intersection_spacing_cells=intersection_spacing_cells,
     )
 
     expected_spawn_len = (grid_cfg.size + 1) // 2

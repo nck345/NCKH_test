@@ -227,7 +227,7 @@ class TrafficModel(mesa.Model):
         self.config = config
         self.size = config.grid.size
         if self.size < 5:
-            raise ValueError("grid.size must be >= 5 for a 2x2 intersection layout.")
+            raise ValueError("grid.size must be >= 5 for a multi-intersection layout.")
 
         self.cell_capacity = config.grid.max_cars_per_cell
         self.turn_count = 0
@@ -237,31 +237,87 @@ class TrafficModel(mesa.Model):
         self.last_epoch_summary: EpochSummary | None = None
         self.epoch_summaries: list[EpochSummary] = []
 
-        self.traffic_lights: dict[tuple[int, int], str] = {}
+        self.traffic_lights: dict[tuple[int, int, int, int], str] = {}
         self._light_timer = 0
         self._occupancy: dict[tuple[int, int], int] = {}
+        self.intersection_spacing_cells = self.config.grid.intersection_spacing_cells
 
-        self.center_right = self.size // 2
-        self.center_left = self.center_right - 1
-        self.road_cols = (self.center_left, self.center_right)
-        self.road_rows = (self.center_left, self.center_right)
-        self.intersection_cells = frozenset(
-            {
-                (self.center_left, self.center_left),
-                (self.center_left, self.center_right),
-                (self.center_right, self.center_left),
-                (self.center_right, self.center_right),
-            }
-        )
+        self.horizontal_pair_starts = self._build_lane_pair_starts(self.size)
+        self.vertical_pair_starts = self._build_lane_pair_starts(self.size)
+
+        self.horizontal_pairs = tuple((start, start + 1) for start in self.horizontal_pair_starts)
+        self.vertical_pairs = tuple((start, start + 1) for start in self.vertical_pair_starts)
+
+        self.row_flow: dict[int, str] = {}
+        for right_row, left_row in self.horizontal_pairs:
+            self.row_flow[right_row] = A_RIGHT
+            self.row_flow[left_row] = A_LEFT
+
+        self.col_flow: dict[int, str] = {}
+        for up_col, down_col in self.vertical_pairs:
+            self.col_flow[up_col] = A_UP
+            self.col_flow[down_col] = A_DOWN
+
+        self.road_rows = tuple(sorted(self.row_flow))
+        self.road_cols = tuple(sorted(self.col_flow))
+
+        self.intersection_blocks = self._build_intersection_blocks()
+        self.intersection_cells = frozenset(self._build_intersection_cells())
         self.road_cells = frozenset(self._build_road_cells())
+        self._cell_to_block: dict[tuple[int, int], tuple[int, int, int, int]] = (
+            self._build_cell_to_block_map()
+        )
 
         self.endpoint_labels = self._build_endpoint_labels()
-        self._spawn_lanes = self._build_spawn_lanes()
+        self.entry_points, self.exit_points = self._build_boundary_points()
+        if not self.entry_points or not self.exit_points:
+            raise ValueError("Unable to create entry/exit points for this grid size.")
+
         self._spawn_schedule: list[tuple[int, int, int, int, int]] = self._build_spawn_schedule()
 
         self._build_lights()
         self._create_cars()
         self._rebuild_occupancy()
+
+    def _build_lane_pair_starts(self, length: int) -> tuple[int, ...]:
+        starts: list[int] = []
+        idx = 1
+        stride = 2 + self.intersection_spacing_cells
+        while idx + 1 < length - 1:
+            starts.append(idx)
+            idx += stride  # lane width 2 + configurable gap
+
+        if not starts:
+            fallback = max(1, min(length - 3, (length // 2) - 1))
+            starts.append(fallback)
+        return tuple(starts)
+
+    def _build_intersection_blocks(self) -> tuple[tuple[int, int, int, int], ...]:
+        blocks: list[tuple[int, int, int, int]] = []
+        for x0, x1 in self.vertical_pairs:
+            for y0, y1 in self.horizontal_pairs:
+                blocks.append((x0, x1, y0, y1))
+        blocks.sort(key=lambda item: (item[2], item[0]))
+        return tuple(blocks)
+
+    def _build_intersection_cells(self) -> set[tuple[int, int]]:
+        cells: set[tuple[int, int]] = set()
+        for x0, x1, y0, y1 in self.intersection_blocks:
+            cells.add((x0, y0))
+            cells.add((x0, y1))
+            cells.add((x1, y0))
+            cells.add((x1, y1))
+        return cells
+
+    def _build_cell_to_block_map(self) -> dict[tuple[int, int], tuple[int, int, int, int]]:
+        mapping: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+        for block in self.intersection_blocks:
+            x0, x1, y0, y1 = block
+            mapping[(x0, y0)] = block
+            mapping[(x0, y1)] = block
+            mapping[(x1, y0)] = block
+            mapping[(x1, y1)] = block
+        return mapping
 
     def _build_road_cells(self) -> set[tuple[int, int]]:
         cells: set[tuple[int, int]] = set()
@@ -274,29 +330,41 @@ class TrafficModel(mesa.Model):
         return cells
 
     def _build_endpoint_labels(self) -> dict[tuple[int, int], str]:
-        top_y = 0
-        bottom_y = self.size - 1
-        left_x = 0
-        right_x = self.size - 1
+        labels: dict[tuple[int, int], str] = {}
+        west_points = sorted([(0, y) for y in self.road_rows], key=lambda p: p[1])
+        east_points = sorted([(self.size - 1, y) for y in self.road_rows], key=lambda p: p[1])
+        north_points = sorted([(x, 0) for x in self.road_cols], key=lambda p: p[0])
+        south_points = sorted([(x, self.size - 1) for x in self.road_cols], key=lambda p: p[0])
 
-        return {
-            (left_x, self.road_rows[0]): "W1",
-            (left_x, self.road_rows[1]): "W2",
-            (right_x, self.road_rows[0]): "E1",
-            (right_x, self.road_rows[1]): "E2",
-            (self.road_cols[0], top_y): "N1",
-            (self.road_cols[1], top_y): "N2",
-            (self.road_cols[0], bottom_y): "S1",
-            (self.road_cols[1], bottom_y): "S2",
-        }
+        for idx, pos in enumerate(west_points, start=1):
+            labels[pos] = f"W{idx}"
+        for idx, pos in enumerate(east_points, start=1):
+            labels[pos] = f"E{idx}"
+        for idx, pos in enumerate(north_points, start=1):
+            labels[pos] = f"N{idx}"
+        for idx, pos in enumerate(south_points, start=1):
+            labels[pos] = f"S{idx}"
+        return labels
 
-    def _build_spawn_lanes(self) -> list[tuple[tuple[int, int], tuple[int, int]]]:
-        return [
-            ((0, self.road_rows[0]), (self.size - 1, self.road_rows[0])),
-            ((self.size - 1, self.road_rows[1]), (0, self.road_rows[1])),
-            ((self.road_cols[0], self.size - 1), (self.road_cols[0], 0)),
-            ((self.road_cols[1], 0), (self.road_cols[1], self.size - 1)),
-        ]
+    def _build_boundary_points(self) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+        entry: list[tuple[int, int]] = []
+        exit_: list[tuple[int, int]] = []
+
+        west_points = sorted([(0, y) for y in self.road_rows], key=lambda p: p[1])
+        east_points = sorted([(self.size - 1, y) for y in self.road_rows], key=lambda p: p[1])
+        north_points = sorted([(x, 0) for x in self.road_cols], key=lambda p: p[0])
+        south_points = sorted([(x, self.size - 1) for x in self.road_cols], key=lambda p: p[0])
+
+        for point in west_points:
+            (entry if self.get_cell_flow(point) == A_RIGHT else exit_).append(point)
+        for point in east_points:
+            (entry if self.get_cell_flow(point) == A_LEFT else exit_).append(point)
+        for point in north_points:
+            (entry if self.get_cell_flow(point) == A_DOWN else exit_).append(point)
+        for point in south_points:
+            (entry if self.get_cell_flow(point) == A_UP else exit_).append(point)
+
+        return tuple(entry), tuple(exit_)
 
     def point_label(self, pos: tuple[int, int]) -> str:
         return self.endpoint_labels.get(pos, f"{pos[0]},{pos[1]}")
@@ -305,14 +373,10 @@ class TrafficModel(mesa.Model):
         x, y = pos
         if pos in self.intersection_cells:
             return None
-        if y == self.road_rows[0]:
-            return A_RIGHT
-        if y == self.road_rows[1]:
-            return A_LEFT
-        if x == self.road_cols[0]:
-            return A_UP
-        if x == self.road_cols[1]:
-            return A_DOWN
+        if y in self.row_flow:
+            return self.row_flow[y]
+        if x in self.col_flow:
+            return self.col_flow[x]
         return None
 
     def _create_cars(self) -> None:
@@ -329,7 +393,7 @@ class TrafficModel(mesa.Model):
             )
 
     def _build_spawn_schedule(self) -> list[tuple[int, int, int, int, int]]:
-        lane_count = len(self._spawn_lanes)
+        lane_count = len(self.entry_points)
         rates = list(self.config.cars.spawn_rates)
         if not rates:
             rates = [1]
@@ -342,13 +406,18 @@ class TrafficModel(mesa.Model):
         turn = 1
 
         while no_cars_left > 0:
-            for lane_idx, (start_pos, dest_pos) in enumerate(self._spawn_lanes):
+            for lane_idx, start_pos in enumerate(self.entry_points):
                 if no_cars_left <= 0:
                     break
                 rate = lane_rates[lane_idx]
                 for _ in range(rate):
                     if no_cars_left <= 0:
                         break
+                    dest_pos = random.choice(self.exit_points)
+                    if len(self.exit_points) > 1:
+                        while dest_pos == start_pos:
+                            dest_pos = random.choice(self.exit_points)
+
                     start_x, start_y = start_pos
                     dest_x, dest_y = dest_pos
                     schedule.append((turn, start_x, start_y, dest_x, dest_y))
@@ -360,10 +429,15 @@ class TrafficModel(mesa.Model):
 
         return schedule
 
+    def _alternate_light(self, state: str) -> str:
+        return "Red" if state == "Green" else "Green"
+
     def _build_lights(self) -> None:
         self.traffic_lights.clear()
-        for pos in sorted(self.intersection_cells):
-            self.traffic_lights[pos] = self.config.traffic_lights.initial_state
+        base_state = self.config.traffic_lights.initial_state
+        for block_idx, block in enumerate(self.intersection_blocks):
+            block_state = base_state if block_idx % 2 == 0 else self._alternate_light(base_state)
+            self.traffic_lights[block] = block_state
         self._light_timer = 0
 
     def step(self) -> None:
@@ -383,7 +457,7 @@ class TrafficModel(mesa.Model):
             return
         self._light_timer = 0
         for pos, state in list(self.traffic_lights.items()):
-            self.traffic_lights[pos] = "Red" if state == "Green" else "Green"
+            self.traffic_lights[pos] = self._alternate_light(state)
 
     def _finish_epoch(self) -> None:
         self.epoch_done = True
@@ -456,7 +530,13 @@ class TrafficModel(mesa.Model):
         return 0 <= x < self.size and 0 <= y < self.size
 
     def get_light(self, x: int, y: int) -> str | None:
-        return self.traffic_lights.get((x, y))
+        block = self._cell_to_block.get((x, y))
+        if block is None:
+            return None
+        return self.traffic_lights.get(block)
+
+    def get_intersection_light(self, block: tuple[int, int, int, int]) -> str:
+        return self.traffic_lights.get(block, self.config.traffic_lights.initial_state)
 
     def _get_block_reason(
         self,
@@ -607,7 +687,7 @@ class TrafficModel(mesa.Model):
     def _directional_preference(self, agent: CarAgent) -> list[str]:
         scored: list[tuple[int, int, int, str]] = []
         current_flow = self.get_cell_flow(agent.cell)
-        for idx, action in enumerate(ACTION_ORDER):
+        for action in ACTION_ORDER:
             nx, ny = self._next_pos(agent.cell, action)
             if not self.in_bounds(nx, ny):
                 continue

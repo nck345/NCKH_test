@@ -313,7 +313,6 @@ class TrafficVisualizer:
         self._draw_grid_background(origin_x, origin_y, cell_size)
         self._draw_road_cells(origin_x, origin_y, cell_size)
         self._draw_intersection_frame(origin_x, origin_y, cell_size)
-        self._draw_traffic_lights(origin_x, origin_y, cell_size)
         self._draw_labels(origin_x, origin_y, cell_size)
         self._draw_cars(origin_x, origin_y, cell_size)
         self._draw_legend(origin_x, origin_y, cell_size)
@@ -355,65 +354,49 @@ class TrafficVisualizer:
                 )
 
     def _draw_intersection_frame(self, ox: int, oy: int, cell: int) -> None:
-        left_col = min(self.model.road_cols)
-        right_col = max(self.model.road_cols)
-        top_row = min(self.model.road_rows)
-        bottom_row = max(self.model.road_rows)
-
-        x1 = ox + left_col * cell
-        x2 = ox + (right_col + 1) * cell
-        y1 = oy + top_row * cell
-        y2 = oy + (bottom_row + 1) * cell
-
         line_w = max(cell // 10, 3)
         side_pad = max(cell // 8, 3)
-        self.canvas.create_line(
-            x1 - side_pad,
-            y1 - side_pad,
-            x2 + side_pad,
-            y1 - side_pad,
-            fill="#ff1f1f",
-            width=line_w,
-        )
-        self.canvas.create_line(
-            x1 - side_pad,
-            y2 + side_pad,
-            x2 + side_pad,
-            y2 + side_pad,
-            fill="#ff1f1f",
-            width=line_w,
-        )
-        self.canvas.create_line(
-            x1 - side_pad,
-            y1 - side_pad,
-            x1 - side_pad,
-            y2 + side_pad,
-            fill="#18e218",
-            width=line_w,
-        )
-        self.canvas.create_line(
-            x2 + side_pad,
-            y1 - side_pad,
-            x2 + side_pad,
-            y2 + side_pad,
-            fill="#18e218",
-            width=line_w,
-        )
+        for x0, x1, y0, y1 in self.model.intersection_blocks:
+            state = self.model.get_intersection_light((x0, x1, y0, y1))
+            vertical_color = "#18e218" if state == "Green" else "#ff1f1f"
+            horizontal_color = "#ff1f1f" if state == "Green" else "#18e218"
 
-    def _draw_traffic_lights(self, ox: int, oy: int, cell: int) -> None:
-        radius = max(cell // 7, 3)
-        for (x, y), state in self.model.traffic_lights.items():
-            cx = ox + x * cell + (cell // 2)
-            cy = oy + y * cell + (cell // 2)
-            color = "#00e676" if state == "Green" else "#ff1744"
-            self.canvas.create_oval(
-                cx - radius,
-                cy - radius,
-                cx + radius,
-                cy + radius,
-                fill=color,
-                outline="#202020",
-                width=1,
+            left = ox + x0 * cell
+            right = ox + (x1 + 1) * cell
+            top = oy + y0 * cell
+            bottom = oy + (y1 + 1) * cell
+
+            self.canvas.create_line(
+                left - side_pad,
+                top - side_pad,
+                right + side_pad,
+                top - side_pad,
+                fill=horizontal_color,
+                width=line_w,
+            )
+            self.canvas.create_line(
+                left - side_pad,
+                bottom + side_pad,
+                right + side_pad,
+                bottom + side_pad,
+                fill=horizontal_color,
+                width=line_w,
+            )
+            self.canvas.create_line(
+                left - side_pad,
+                top - side_pad,
+                left - side_pad,
+                bottom + side_pad,
+                fill=vertical_color,
+                width=line_w,
+            )
+            self.canvas.create_line(
+                right + side_pad,
+                top - side_pad,
+                right + side_pad,
+                bottom + side_pad,
+                fill=vertical_color,
+                width=line_w,
             )
 
     def _draw_labels(self, ox: int, oy: int, cell: int) -> None:
@@ -495,7 +478,7 @@ class TrafficVisualizer:
         x2 = ox + self.model.size * cell
         y2 = y1 + 24
         self.canvas.create_rectangle(x1, y1, x2, y2, fill="#111936", outline="#2a2a4a")
-        text = "Cyan cells = drivable cells | Center 2x2 = signal junction | Red car border = wrong-way penalty"
+        text = "Cyan cells = drivable cells | Signal is green/red line frame around each 2x2 crossing"
         self.canvas.create_text(
             (x1 + x2) // 2,
             (y1 + y2) // 2,

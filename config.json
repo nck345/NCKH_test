@@ -7,11 +7,14 @@
   "grid": {
     "size": 11,
     "no_cars_per_cell": 1,
-    "max_cars_per_cell": 1
+    "max_cars_per_cell": 1,
+    "intersection_spacing_cells": 1
   },
   "cars": {
-    "total_cars": 5,
+    "total_cars": 24,
     "spawn_rates": [
+      1,
+      1,
       1,
       1,
       1,
